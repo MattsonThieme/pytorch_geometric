@@ -246,6 +246,7 @@ class GLAMConv(MessagePassing):
 
         # Sample edge indices
         self.new_edges = self.sample_eta(eta, tau=0.001)
+        # self.new_edges = torch.ones(eta.shape[0], self.heads)
 
         # Mask by multiplying by the new edges
         # alpha = self.mask(alpha, new_edges)
@@ -317,7 +318,7 @@ class GLAMConv(MessagePassing):
         eta = torch.sum(alpha, dim=1)
 
         # Get interaction probabilities
-        eta = F.sigmoid(eta)
+        eta = torch.sigmoid(eta)
 
         return eta.unsqueeze(1)
 
