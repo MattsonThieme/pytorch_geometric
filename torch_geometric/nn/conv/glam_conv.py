@@ -15,7 +15,7 @@ from torch_geometric.typing import (
     OptTensor,
     Size,
 )
-from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
+from torch_geometric.utils import add_self_loops, remove_self_loops, softmax, softmax_mask
 
 from ..inits import glorot, zeros
 
@@ -340,7 +340,7 @@ class GLAMConv(MessagePassing):
             alpha = alpha + alpha_edge
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = softmax(alpha, index, ptr, size_i)
+        alpha = softmax_mask(alpha, self.new_edges, index, ptr, size_i)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 

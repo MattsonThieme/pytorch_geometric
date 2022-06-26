@@ -1,5 +1,6 @@
 from .degree import degree
 from .softmax import softmax
+from .softmax_mask import softmax_mask
 from .dropout import dropout_adj
 from .sort_edge_index import sort_edge_index
 from .coalesce import coalesce
@@ -37,6 +38,7 @@ from .train_test_split_edges import train_test_split_edges
 __all__ = [
     'degree',
     'softmax',
+    'softmax_mask',
     'dropout_adj',
     'sort_edge_index',
     'coalesce',
