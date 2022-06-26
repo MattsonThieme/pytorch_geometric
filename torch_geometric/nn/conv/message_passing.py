@@ -432,6 +432,37 @@ class MessagePassing(torch.nn.Module):
 
         return out
 
+    def edge_updater_sls(self, edge_index: Adj, **kwargs):
+        r"""The initial call to compute or update structure learning scores
+
+        Args:
+            edge_index (Tensor or SparseTensor): A :obj:`torch.LongTensor` or a
+                :obj:`torch_sparse.SparseTensor` that defines the underlying
+                graph connectivity/message passing flow.
+                See :meth:`propagate` for more information.
+            **kwargs: Any additional data which is needed to compute or update
+                features for each edge in the graph.
+        """
+        for hook in self._edge_update_forward_pre_hooks.values():
+            res = hook(self, (edge_index, kwargs))
+            if res is not None:
+                edge_index, kwargs = res
+
+        size = self.__check_input__(edge_index, size=None)
+
+        coll_dict = self.__collect__(self.__edge_user_args__, edge_index, size,
+                                     kwargs)
+
+        edge_kwargs = self.inspector.distribute('edge_update', coll_dict)
+        out = self.edge_update_sls(**edge_kwargs)
+
+        for hook in self._edge_update_forward_hooks.values():
+            res = hook(self, (edge_index, kwargs), out)
+            if res is not None:
+                out = res
+
+        return out
+
     def message(self, x_j: Tensor) -> Tensor:
         r"""Constructs messages from node :math:`j` to node :math:`i`
         in analogy to :math:`\phi_{\mathbf{\Theta}}` for each edge in

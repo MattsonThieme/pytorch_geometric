@@ -129,6 +129,9 @@ class GLAMConv(MessagePassing):
         self.edge_dim = edge_dim
         self.fill_value = fill_value
 
+        # Dummy for new edges
+        self.new_edges = None
+
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
         if isinstance(in_channels, int):
@@ -238,8 +241,18 @@ class GLAMConv(MessagePassing):
                         "simultaneously is currently not yet supported for "
                         "'edge_index' in a 'SparseTensor' form")
 
+        # First, get structure learning scores n_ij
+        eta = self.edge_updater_sls(edge_index, alpha=alpha, edge_attr=edge_attr)
+
+        # Sample edge indices
+        self.new_edges = self.sample_eta(eta, tau=0.001)
+
+        # Mask by multiplying by the new edges
+        # alpha = self.mask(alpha, new_edges)
+
         # edge_updater_type: (alpha: OptPairTensor, edge_attr: OptTensor)
         alpha = self.edge_updater(edge_index, alpha=alpha, edge_attr=edge_attr)
+
 
         # propagate_type: (x: OptPairTensor, alpha: Tensor)
         out = self.propagate(edge_index, x=x, alpha=alpha, size=size)
@@ -260,12 +273,63 @@ class GLAMConv(MessagePassing):
         else:
             return out
 
+    # Mask the attention coefficients using the new_edges before the forward pass
+    def mask(self, alpha: tuple, new_edges: Tensor) -> Tuple:
+
+        return 0
+
+    # Sample new edges from the structure learning scores
+    def sample_eta(self, eta: Tensor, tau: float) -> Tensor:
+
+        # Add a dimension with 1 - probability (for Gumbel softmax)
+        dists = torch.cat((eta, 1 - eta), dim=1)
+
+        # Get hard samples from the distribution
+        hard = F.gumbel_softmax(dists, tau=tau, hard=True)
+
+        # Get samples for our predicted probabilities
+        new_edges = hard[:, 0]
+
+        # Expand dims to match alpha
+        new_edges = new_edges.unsqueeze(1).expand(new_edges.shape[0], self.heads)
+
+        return new_edges
+
+    # Get structure learning scores, eta
+    def edge_update_sls(self, alpha_j: Tensor, alpha_i: OptTensor,
+                    edge_attr: OptTensor, index: Tensor, ptr: OptTensor,
+                    size_i: Optional[int]) -> Tensor:
+        # Given edge-level attention coefficients for source and target nodes,
+        # we simply need to sum them up to "emulate" concatenation:
+        alpha = alpha_j if alpha_i is None else alpha_j + alpha_i
+
+        if edge_attr is not None and self.lin_edge is not None:
+            if edge_attr.dim() == 1:
+                edge_attr = edge_attr.view(-1, 1)
+            edge_attr = self.lin_edge(edge_attr)
+            edge_attr = edge_attr.view(-1, self.heads, self.out_channels)
+            alpha_edge = (edge_attr * self.att_edge).sum(dim=-1)
+            alpha = alpha + alpha_edge
+
+        # eta = F.leaky_relu(alpha, self.negative_slope)
+
+        # Sum over all the attention heads to get a single new structure
+        eta = torch.sum(alpha, dim=1)
+
+        # Get interaction probabilities
+        eta = F.sigmoid(eta)
+
+        return eta.unsqueeze(1)
+
     def edge_update(self, alpha_j: Tensor, alpha_i: OptTensor,
                     edge_attr: OptTensor, index: Tensor, ptr: OptTensor,
                     size_i: Optional[int]) -> Tensor:
         # Given edge-level attention coefficients for source and target nodes,
         # we simply need to sum them up to "emulate" concatenation:
         alpha = alpha_j if alpha_i is None else alpha_j + alpha_i
+
+        # Mask using the new_nodes
+        # alpha = alpha * self.new_edges
 
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
