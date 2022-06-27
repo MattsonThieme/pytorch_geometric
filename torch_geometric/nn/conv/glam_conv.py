@@ -385,11 +385,6 @@ class GLAMConv(MessagePassing):
         else:
             return out, self.new_edges
 
-    # Mask the attention coefficients using the new_edges before the forward pass
-    def mask(self, alpha: tuple, new_edges: Tensor) -> Tuple:
-
-        return 0
-
     # Sample new edges from the structure learning scores
     def sample_eta(self, eta: Tensor, tau: float) -> Tensor:
 
