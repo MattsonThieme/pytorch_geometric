@@ -43,7 +43,7 @@ def softmax_mask(
         N = maybe_num_nodes(index, num_nodes)
 
         # Dont consider masked elements in max calculation
-        shift_masked_nodes = (1 - mask) * 1e3
+        shift_masked_nodes = (1 - mask) * (src.max() + 1e-6)
         src = src - shift_masked_nodes
         src_max = scatter(src, index, dim, dim_size=N, reduce='max')
         src_max = src_max.index_select(dim, index)
