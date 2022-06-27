@@ -395,10 +395,10 @@ class GLAMConv(MessagePassing):
 
         # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
-        dists = torch.log(torch.cat((eta, 1 - eta), dim=1))
+        logits = torch.log(torch.cat((eta, 1 - eta), dim=1))
 
         # Get hard samples from the distribution
-        hard = F.gumbel_softmax(dists, tau=tau, hard=True)
+        hard = F.gumbel_softmax(logits, tau=tau, hard=True)
 
         # Get samples for our predicted probabilities
         new_edges = hard[:, 0]
