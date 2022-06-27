@@ -207,11 +207,20 @@ class GLAMConv(MessagePassing):
         elif bias and not concat:
             self.bias_sl = Parameter(torch.Tensor(self.out_channels_sl))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter('bias_sl', None)
 
         self.reset_parameters()
 
     def reset_parameters(self):
+        self.lin_src_sl.reset_parameters()
+        self.lin_dst_sl.reset_parameters()
+        if self.lin_edge_sl is not None:
+            self.lin_edge_sl.reset_parameters()
+        glorot(self.att_src_sl)
+        glorot(self.att_dst_sl)
+        glorot(self.att_edge_sl)
+        zeros(self.bias_sl)
+
         self.lin_src.reset_parameters()
         self.lin_dst.reset_parameters()
         if self.lin_edge is not None:
@@ -221,7 +230,7 @@ class GLAMConv(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, new_edges: Tensor,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -247,56 +256,61 @@ class GLAMConv(MessagePassing):
         # Structure Learning
         ##################################################################
 
-        H_sl, C_sl = self.heads_sl, self.out_channels_sl
+        # If new_edges is passed, this is not the first layer. Use the new_edges found by the first layer
+        if isinstance(new_edges, Tensor):
+            self.new_edges = new_edges[:, :self.heads]
 
-        # We first transform the input node features. If a tuple is passed, we
-        # transform source and target node features via separate weights:
-        if isinstance(x, Tensor):
-            assert x.dim() == 2, "Static graphs not supported in 'GATConv'"
-            x_src_sl = x_dst_sl = self.lin_src_sl(x).view(-1, H_sl, C_sl)
-        else:  # Tuple of source and target node features:
-            x_src_sl, x_dst_sl = x
-            assert x_src_sl.dim() == 2, "Static graphs not supported in 'GATConv'"
-            x_src_sl = self.lin_src_sl(x_src_sl).view(-1, H_sl, C_sl)
-            if x_dst_sl is not None:
-                x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
+        else:
+            H_sl, C_sl = self.heads_sl, self.out_channels_sl
 
-        x_sl = (x_src_sl, x_dst_sl)
-
-        # Next, we compute node-level attention coefficients, both for source
-        # and target nodes (if present):
-        alpha_src_sl = (x_src_sl * self.att_src_sl).sum(dim=-1)
-        alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
-        alpha_sl = (alpha_src_sl, alpha_dst_sl)
-
-        if self.add_self_loops:
-            if isinstance(edge_index, Tensor):
-                # We only want to add self-loops for nodes that appear both as
-                # source and target nodes:
-                num_nodes = x_src_sl.size(0)
+            # We first transform the input node features. If a tuple is passed, we
+            # transform source and target node features via separate weights:
+            if isinstance(x, Tensor):
+                assert x.dim() == 2, "Static graphs not supported in 'GATConv'"
+                x_src_sl = x_dst_sl = self.lin_src_sl(x).view(-1, H_sl, C_sl)
+            else:  # Tuple of source and target node features:
+                x_src_sl, x_dst_sl = x
+                assert x_src_sl.dim() == 2, "Static graphs not supported in 'GATConv'"
+                x_src_sl = self.lin_src_sl(x_src_sl).view(-1, H_sl, C_sl)
                 if x_dst_sl is not None:
-                    num_nodes = min(num_nodes, x_dst_sl.size(0))
-                num_nodes = min(size) if size is not None else num_nodes
-                edge_index, edge_attr = remove_self_loops(
-                    edge_index, edge_attr)
-                edge_index, edge_attr = add_self_loops(
-                    edge_index, edge_attr, fill_value=self.fill_value,
-                    num_nodes=num_nodes)
-            elif isinstance(edge_index, SparseTensor):
-                if self.edge_dim is None:
-                    edge_index = set_diag(edge_index)
-                else:
-                    raise NotImplementedError(
-                        "The usage of 'edge_attr' and 'add_self_loops' "
-                        "simultaneously is currently not yet supported for "
-                        "'edge_index' in a 'SparseTensor' form")
+                    x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
 
-        # First, get structure learning scores n_ij
-        eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
+            x_sl = (x_src_sl, x_dst_sl)
 
-        # Sample edge indices
-        self.new_edges = self.sample_eta(eta, tau=tau)
-        # self.new_edges = torch.ones(eta.shape[0], self.heads)
+            # Next, we compute node-level attention coefficients, both for source
+            # and target nodes (if present):
+            alpha_src_sl = (x_src_sl * self.att_src_sl).sum(dim=-1)
+            alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
+            alpha_sl = (alpha_src_sl, alpha_dst_sl)
+
+            if self.add_self_loops:
+                if isinstance(edge_index, Tensor):
+                    # We only want to add self-loops for nodes that appear both as
+                    # source and target nodes:
+                    num_nodes = x_src_sl.size(0)
+                    if x_dst_sl is not None:
+                        num_nodes = min(num_nodes, x_dst_sl.size(0))
+                    num_nodes = min(size) if size is not None else num_nodes
+                    edge_index, edge_attr = remove_self_loops(
+                        edge_index, edge_attr)
+                    edge_index, edge_attr = add_self_loops(
+                        edge_index, edge_attr, fill_value=self.fill_value,
+                        num_nodes=num_nodes)
+                elif isinstance(edge_index, SparseTensor):
+                    if self.edge_dim is None:
+                        edge_index = set_diag(edge_index)
+                    else:
+                        raise NotImplementedError(
+                            "The usage of 'edge_attr' and 'add_self_loops' "
+                            "simultaneously is currently not yet supported for "
+                            "'edge_index' in a 'SparseTensor' form")
+
+            # First, get structure learning scores n_ij
+            eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
+
+            # Sample edge indices
+            self.new_edges = self.sample_eta(eta, tau=tau)
+            # self.new_edges = torch.ones(eta.shape[0], self.heads)
 
         ##################################################################
         # Graph Attention
@@ -379,8 +393,9 @@ class GLAMConv(MessagePassing):
     # Sample new edges from the structure learning scores
     def sample_eta(self, eta: Tensor, tau: float) -> Tensor:
 
+        # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
-        dists = torch.cat((eta, 1 - eta), dim=1)
+        dists = torch.log(torch.cat((eta, 1 - eta), dim=1))
 
         # Get hard samples from the distribution
         hard = F.gumbel_softmax(dists, tau=tau, hard=True)
