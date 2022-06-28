@@ -315,8 +315,8 @@ class GLAMConv(MessagePassing):
             if train_structure:
                 self.new_edges = self.sample_eta(eta, tau=tau)
             else:
-                self.new_edges = torch.ones(eta.shape[0], self.heads)
-                # self.new_edges = self.sample_eta(eta, tau=tau).detach()
+                # self.new_edges = torch.ones(eta.shape[0], self.heads)
+                self.new_edges = self.sample_eta(eta, tau=tau).detach()
 
         ##################################################################
         # Graph Attention
