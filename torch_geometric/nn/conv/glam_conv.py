@@ -6,6 +6,8 @@ from torch import Tensor
 from torch.nn import Parameter
 from torch_sparse import SparseTensor, set_diag
 
+import numpy as np
+
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.typing import (
@@ -259,6 +261,7 @@ class GLAMConv(MessagePassing):
         # If new_edges is passed, this is not the first layer. Use the new_edges found by the first layer
         if isinstance(new_edges, Tensor):
             self.new_edges = new_edges[:, :self.heads]
+            eta = None
 
         else:
             H_sl, C_sl = self.heads_sl, self.out_channels_sl
@@ -383,7 +386,7 @@ class GLAMConv(MessagePassing):
             elif isinstance(edge_index, SparseTensor):
                 return out, edge_index.set_value(alpha, layout='coo')
         else:
-            return out, self.new_edges
+            return out, eta, self.new_edges
 
     # Sample new edges from the structure learning scores
     def sample_eta(self, eta: Tensor, tau: float) -> Tensor:
@@ -421,8 +424,8 @@ class GLAMConv(MessagePassing):
 
         # eta = F.leaky_relu(alpha, self.negative_slope)
 
-        # Sum over all the attention heads to get a single new structure
-        eta = torch.sum(alpha_sl, dim=1)
+        # Average over all the attention heads to get a single new structure
+        eta = torch.mean(alpha_sl, dim=1)
 
         # Get interaction probabilities
         eta = torch.sigmoid(eta)
