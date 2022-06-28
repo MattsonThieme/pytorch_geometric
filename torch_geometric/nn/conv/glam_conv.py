@@ -232,7 +232,7 @@ class GLAMConv(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, new_edges: Tensor,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, new_edges: Tensor, train_structure: bool,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -312,8 +312,11 @@ class GLAMConv(MessagePassing):
             eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
 
             # Sample edge indices
-            self.new_edges = self.sample_eta(eta, tau=tau)
-            # self.new_edges = torch.ones(eta.shape[0], self.heads)
+            if train_structure:
+                self.new_edges = self.sample_eta(eta, tau=tau)
+            else:
+                # self.new_edges = torch.ones(eta.shape[0], self.heads)
+                self.new_edges = self.sample_eta(eta, tau=tau).detach()
 
         ##################################################################
         # Graph Attention
