@@ -185,7 +185,7 @@ class GLAMConv(MessagePassing):
         if isinstance(in_channels, int):
             self.lin_src_sl = Linear(in_channels, self.heads_sl * self.out_channels_sl,
                                      bias=False, weight_initializer='glorot')
-            self.lin_dst_sl = self.lin_src
+            self.lin_dst_sl = self.lin_src_sl
         else:
             self.lin_src_sl = Linear(in_channels[0], self.heads_sl * self.out_channels_sl, False,
                                      weight_initializer='glorot')
@@ -315,8 +315,8 @@ class GLAMConv(MessagePassing):
             if train_structure:
                 self.new_edges = self.sample_eta(eta, tau=tau)
             else:
-                # self.new_edges = torch.ones(eta.shape[0], self.heads)
-                self.new_edges = self.sample_eta(eta, tau=tau).detach()
+                self.new_edges = torch.ones(eta.shape[0], self.heads)
+                # self.new_edges = self.sample_eta(eta, tau=tau).detach()
 
         ##################################################################
         # Graph Attention
@@ -396,7 +396,7 @@ class GLAMConv(MessagePassing):
 
         # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
-        logits = torch.log(torch.cat((eta, 1 - eta), dim=1))
+        logits = torch.log(torch.cat((eta, 1 - eta + 1e-9), dim=1))
 
         # Get hard samples from the distribution
         hard = F.gumbel_softmax(logits, tau=tau, hard=True)
