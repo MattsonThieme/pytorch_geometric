@@ -366,9 +366,6 @@ class GLAMConv(MessagePassing):
                         "simultaneously is currently not yet supported for "
                         "'edge_index' in a 'SparseTensor' form")
 
-        # Mask by multiplying by the new edges
-        # alpha = self.mask(alpha, new_edges)
-
         # edge_updater_type: (alpha: OptPairTensor, edge_attr: OptTensor)
         alpha = self.edge_updater(edge_index, alpha=alpha, edge_attr=edge_attr)
 
