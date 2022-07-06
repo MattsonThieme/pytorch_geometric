@@ -313,7 +313,7 @@ class GLAMConv(MessagePassing):
 
             # Sample edge indices
             if train_structure:
-                self.new_edges = self.sample_eta(eta, tau=tau)
+                self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
             else:
                 # self.new_edges = torch.ones(eta.shape[0], self.heads)
                 self.new_edges = self.sample_eta(eta, tau=tau).detach()
@@ -389,17 +389,20 @@ class GLAMConv(MessagePassing):
             return out, eta, self.new_edges
 
     # Sample new edges from the structure learning scores
-    def sample_eta(self, eta: Tensor, tau: float) -> Tensor:
+    def sample_eta(self, eta: Tensor, tau: float, num_nodes: int) -> Tensor:
 
         # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
-        logits = torch.log(torch.cat((eta, 1 - eta + 1e-9), dim=1))
+        logits = torch.log(torch.cat((eta, 1 - eta), dim=1))
 
         # Get hard samples from the distribution
         hard = F.gumbel_softmax(logits, tau=tau, hard=True)
 
-        # Get samples for our predicted probabilities
-        new_edges = hard[:, 0]
+        # Get samples for 1 - our predicted probabilities
+        new_edges = hard[:, 1]
+
+        # Retain the self loops by setting the drop probability to zero
+        new_edges[-num_nodes:] = new_edges[-num_nodes:] * 0
 
         # Expand dims to match alpha
         new_edges = new_edges.unsqueeze(1).expand(new_edges.shape[0], self.heads)
@@ -422,10 +425,10 @@ class GLAMConv(MessagePassing):
             alpha_edge_sl = (edge_attr * self.att_edge_sl).sum(dim=-1)
             alpha_sl = alpha_sl + alpha_edge_sl
 
-        # eta = F.leaky_relu(alpha, self.negative_slope)
+        eta = F.leaky_relu(alpha_sl, self.negative_slope)
 
         # Average over all the attention heads to get a single new structure
-        eta = torch.mean(alpha_sl, dim=1)
+        eta = torch.mean(eta, dim=1)
 
         # Get interaction probabilities
         eta = torch.sigmoid(eta)
@@ -439,8 +442,8 @@ class GLAMConv(MessagePassing):
         # we simply need to sum them up to "emulate" concatenation:
         alpha = alpha_j if alpha_i is None else alpha_j + alpha_i
 
-        # Mask using the new_nodes
-        # alpha = alpha * self.new_edges
+        # Apply the mask but keep the self-loops
+        alpha = alpha - self.new_edges * 1e6
 
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
@@ -451,7 +454,8 @@ class GLAMConv(MessagePassing):
             alpha = alpha + alpha_edge
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = softmax_mask(alpha, self.new_edges, index, ptr, size_i)
+        # alpha = softmax_mask(alpha, self.new_edges, index, ptr, size_i)
+        alpha = softmax(alpha, index, ptr, size_i)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 
