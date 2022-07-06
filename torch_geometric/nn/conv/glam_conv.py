@@ -232,7 +232,7 @@ class GLAMConv(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, new_edges: Tensor, train_structure: bool,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, new_edges: Tensor, train_structure: bool, drop_prob: float,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -257,6 +257,8 @@ class GLAMConv(MessagePassing):
         ##################################################################
         # Structure Learning
         ##################################################################
+
+        self.dropout = drop_prob
 
         # If new_edges is passed, this is not the first layer. Use the new_edges found by the first layer
         if isinstance(new_edges, Tensor):
@@ -308,15 +310,15 @@ class GLAMConv(MessagePassing):
                             "simultaneously is currently not yet supported for "
                             "'edge_index' in a 'SparseTensor' form")
 
-            # First, get structure learning scores n_ij
-            eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-
             # Sample edge indices
             if train_structure:
+                # First, get structure learning scores n_ij
+                eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
                 self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
             else:
-                # self.new_edges = torch.ones(eta.shape[0], self.heads)
-                self.new_edges = self.sample_eta(eta, tau=tau).detach()
+                self.new_edges = torch.zeros(edge_index.shape[1], self.heads)
+                eta = torch.zeros(edge_index.shape[1], self.heads)
+                # self.new_edges = self.sample_eta(eta, tau=tau).detach()
 
         ##################################################################
         # Graph Attention
@@ -393,7 +395,7 @@ class GLAMConv(MessagePassing):
 
         # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
-        logits = torch.log(torch.cat((eta, 1 - eta), dim=1))
+        logits = torch.log(torch.cat((eta, 1 - eta + 1e-9), dim=1))
 
         # Get hard samples from the distribution
         hard = F.gumbel_softmax(logits, tau=tau, hard=True)
@@ -402,7 +404,7 @@ class GLAMConv(MessagePassing):
         new_edges = hard[:, 1]
 
         # Retain the self loops by setting the drop probability to zero
-        new_edges[-num_nodes:] = new_edges[-num_nodes:] * 0
+        # new_edges[-num_nodes:] = new_edges[-num_nodes:] * 0
 
         # Expand dims to match alpha
         new_edges = new_edges.unsqueeze(1).expand(new_edges.shape[0], self.heads)
@@ -456,6 +458,8 @@ class GLAMConv(MessagePassing):
         alpha = F.leaky_relu(alpha, self.negative_slope)
         # alpha = softmax_mask(alpha, self.new_edges, index, ptr, size_i)
         alpha = softmax(alpha, index, ptr, size_i)
+        alpha = alpha / (1 - torch.sum(self.new_edges) / torch.numel(self.new_edges))
+
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 
