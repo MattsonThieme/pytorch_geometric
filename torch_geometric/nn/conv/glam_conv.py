@@ -477,12 +477,27 @@ class GLAMConv(MessagePassing):
 
     def renorm(self, alpha: Tensor, index: Tensor, num_nodes: int) -> Tensor:
 
-        # Get the sum given all neighbors
-        alpha_sum = scatter(alpha, index, 0, dim_size=num_nodes, reduce='sum')
+        # For softmax calculation
+        retained = index[self.new_edges[:, 0] == 1]
+        alpha_non_zero = alpha[self.new_edges[:, 0] == 1]
+
+        # Get max
+        alpha_non_zero_max = scatter(alpha, index, 0, dim_size=num_nodes, reduce='max')
+        alpha_non_zero_max = alpha_non_zero_max.index_select(0, retained)
+
+        # Exponentiate
+        exp = (alpha_non_zero - alpha_non_zero_max).exp()
+
+        # Insert the new softmax values
+        expanded = torch.zeros(alpha.shape)
+        expanded[self.new_edges[:, 0] == 1] = exp
+
+        # Get sum
+        alpha_sum = scatter(expanded, index, 0, dim_size=num_nodes, reduce='sum')
         alpha_sum = alpha_sum.index_select(0, index)
 
-        # Normalize to sum to 1, allowing nodes with no edges to have zero output
-        alpha = alpha / (alpha_sum + 1e-10)
+        # Final output
+        alpha = expanded / (alpha_sum + 1e-10)
 
         return alpha
 
