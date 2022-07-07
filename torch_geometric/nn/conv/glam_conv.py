@@ -431,7 +431,7 @@ class GLAMConv(MessagePassing):
                         size_i: Optional[int]) -> Tensor:
         # Given edge-level attention coefficients for source and target nodes,
         # we simply need to sum them up to "emulate" concatenation:
-        alpha_sl = alpha_j if alpha_i is None else alpha_j - alpha_i
+        alpha_sl = alpha_j if alpha_i is None else alpha_j + alpha_i
 
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
@@ -468,9 +468,8 @@ class GLAMConv(MessagePassing):
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
 
-        # alpha = softmax_mask(alpha, self.new_edges, index, ptr, size_i)
-        alpha = softmax(alpha, index, ptr, size_i)
-        alpha = alpha * self.new_edges
+        # alpha = softmax(alpha, index, ptr, size_i)
+        # alpha = alpha * self.new_edges
 
         # Renormalize to sum to 1
         alpha = self.renorm(alpha, index, size_i)
@@ -507,12 +506,13 @@ class GLAMConv(MessagePassing):
         alpha_sum = alpha_sum.index_select(0, index)
 
         # Final output
-        alpha = expanded / (alpha_sum + 1e-10)
+        alpha = expanded / (alpha_sum + 1e-16)
 
         return alpha
 
     def message(self, x_j: Tensor, alpha: Tensor) -> Tensor:
         return alpha.unsqueeze(-1) * x_j
+        # return self.new_edges.unsqueeze(-1) * alpha.unsqueeze(-1) * x_j
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
