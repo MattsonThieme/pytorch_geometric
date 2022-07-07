@@ -469,19 +469,12 @@ class GLAMConv(MessagePassing):
         alpha = F.leaky_relu(alpha, self.negative_slope)
 
         # alpha = softmax(alpha, index, ptr, size_i)
-        # alpha = alpha * self.new_edges
 
-        # Renormalize to sum to 1
+        # Renormalize to sum to 1 (identical to softmax for non-masked elements)
         alpha = self.renorm(alpha, index, size_i)
 
-        # alpha = alpha / (torch.sum(self.new_edges) / torch.numel(self.new_edges))
-
-        # Normalize such that it is equivalent to the softmax over retained nodes
-        # alpha = self.renorm(alpha, index, size_i)
-
-        # alpha = alpha / (1 - torch.sum(self.new_edges) / torch.numel(self.new_edges))
-
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+
         return alpha
 
     def renorm(self, alpha: Tensor, index: Tensor, num_nodes: int) -> Tensor:
@@ -500,6 +493,7 @@ class GLAMConv(MessagePassing):
         # Insert the new softmax values
         expanded = torch.zeros(alpha.shape)
         expanded[self.new_edges[:, 0] == 1] = exp
+        expanded = expanded * self.new_edges
 
         # Get sum
         alpha_sum = scatter(expanded, index, 0, dim_size=num_nodes, reduce='sum')
