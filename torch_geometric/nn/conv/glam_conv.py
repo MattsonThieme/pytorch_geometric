@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Parameter
 from torch_sparse import SparseTensor, set_diag
+from torch_scatter import gather_csr, scatter
 
 import numpy as np
 
@@ -403,8 +404,11 @@ class GLAMConv(MessagePassing):
         # Get samples for 1 - our predicted probabilities
         new_edges = hard[:, 1]
 
+        # Apply dropout to our mask, then renormalize
+        # new_edges = F.dropout(new_edges, p=self.dropout, training=self.training) * (1 - self.dropout)
+
         # Retain the self loops by setting the drop probability to zero
-        # new_edges[-num_nodes:] = new_edges[-num_nodes:] * 0
+        new_edges[-num_nodes:] = 1
 
         # Expand dims to match alpha
         new_edges = new_edges.unsqueeze(1).expand(new_edges.shape[0], self.heads)
@@ -444,9 +448,6 @@ class GLAMConv(MessagePassing):
         # we simply need to sum them up to "emulate" concatenation:
         alpha = alpha_j if alpha_i is None else alpha_j + alpha_i
 
-        # Apply the mask but keep the self-loops
-        alpha = alpha - self.new_edges * 1e6
-
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
                 edge_attr = edge_attr.view(-1, 1)
@@ -456,11 +457,33 @@ class GLAMConv(MessagePassing):
             alpha = alpha + alpha_edge
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
+
         # alpha = softmax_mask(alpha, self.new_edges, index, ptr, size_i)
         alpha = softmax(alpha, index, ptr, size_i)
-        alpha = alpha / (1 - torch.sum(self.new_edges) / torch.numel(self.new_edges))
+        alpha = alpha * self.new_edges
+
+        # Renormalize to sum to 1
+        alpha = self.renorm(alpha, index, size_i)
+
+        # alpha = alpha / (torch.sum(self.new_edges) / torch.numel(self.new_edges))
+
+        # Normalize such that it is equivalent to the softmax over retained nodes
+        # alpha = self.renorm(alpha, index, size_i)
+
+        # alpha = alpha / (1 - torch.sum(self.new_edges) / torch.numel(self.new_edges))
 
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+        return alpha
+
+    def renorm(self, alpha: Tensor, index: Tensor, num_nodes: int) -> Tensor:
+
+        # Get the sum given all neighbors
+        alpha_sum = scatter(alpha, index, 0, dim_size=num_nodes, reduce='sum')
+        alpha_sum = alpha_sum.index_select(0, index)
+
+        # Normalize to sum to 1, allowing nodes with no edges to have zero output
+        alpha = alpha / (alpha_sum + 1e-10)
+
         return alpha
 
     def message(self, x_j: Tensor, alpha: Tensor) -> Tensor:
