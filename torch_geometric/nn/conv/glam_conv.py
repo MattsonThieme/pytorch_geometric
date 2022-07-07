@@ -179,7 +179,7 @@ class GLAMConv(MessagePassing):
         ##################################################################
 
         self.heads_sl = 8
-        self.out_channels_sl = 1
+        self.out_channels_sl = 64
 
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
@@ -206,9 +206,10 @@ class GLAMConv(MessagePassing):
             self.register_parameter('att_edge_sl', None)
 
         if bias and concat:
-            self.bias_sl = Parameter(torch.Tensor(self.heads_sl * self.out_channels_sl))
+            self.bias_sl = Parameter(torch.Tensor(self.heads_sl))
+
         elif bias and not concat:
-            self.bias_sl = Parameter(torch.Tensor(self.out_channels_sl))
+            self.bias_sl = Parameter(torch.Tensor(self.heads_sl))
         else:
             self.register_parameter('bias_sl', None)
 
@@ -285,8 +286,15 @@ class GLAMConv(MessagePassing):
 
             # Next, we compute node-level attention coefficients, both for source
             # and target nodes (if present):
-            alpha_src_sl = (x_src_sl * self.att_src_sl).sum(dim=-1)
+            alpha_src_sl = (x_src_sl * self.att_src_sl).sum(-1)
             alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
+
+            if self.bias_sl == None:
+                pass
+            else:
+                alpha_src_sl = alpha_src_sl + self.bias_sl
+                alpha_dst_sl = alpha_dst_sl + self.bias_sl
+
             alpha_sl = (alpha_src_sl, alpha_dst_sl)
 
             if self.add_self_loops:
@@ -317,7 +325,9 @@ class GLAMConv(MessagePassing):
                 eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
                 self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
             else:
-                self.new_edges = torch.zeros(edge_index.shape[1], self.heads)
+                self.new_edges = torch.ones(edge_index.shape[1], self.heads)  # Original
+                # self.new_edges = torch.cat((self.new_edges, torch.zeros(edge_index.shape[1] - 10556 - x.shape[0], self.heads)))  # Noise
+                # self.new_edges = torch.cat((self.new_edges, torch.ones(x.shape[0], self.heads)))  # self loops
                 eta = torch.zeros(edge_index.shape[1], self.heads)
                 # self.new_edges = self.sample_eta(eta, tau=tau).detach()
 
@@ -402,13 +412,13 @@ class GLAMConv(MessagePassing):
         hard = F.gumbel_softmax(logits, tau=tau, hard=True)
 
         # Get samples for 1 - our predicted probabilities
-        new_edges = hard[:, 1]
+        new_edges = hard[:, 0]
 
         # Apply dropout to our mask, then renormalize
         # new_edges = F.dropout(new_edges, p=self.dropout, training=self.training) * (1 - self.dropout)
 
         # Retain the self loops by setting the drop probability to zero
-        new_edges[-num_nodes:] = 1
+        # new_edges[-num_nodes:] = 1
 
         # Expand dims to match alpha
         new_edges = new_edges.unsqueeze(1).expand(new_edges.shape[0], self.heads)
@@ -421,7 +431,7 @@ class GLAMConv(MessagePassing):
                         size_i: Optional[int]) -> Tensor:
         # Given edge-level attention coefficients for source and target nodes,
         # we simply need to sum them up to "emulate" concatenation:
-        alpha_sl = alpha_j if alpha_i is None else alpha_j + alpha_i
+        alpha_sl = alpha_j if alpha_i is None else alpha_j - alpha_i
 
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
@@ -431,10 +441,10 @@ class GLAMConv(MessagePassing):
             alpha_edge_sl = (edge_attr * self.att_edge_sl).sum(dim=-1)
             alpha_sl = alpha_sl + alpha_edge_sl
 
-        eta = F.leaky_relu(alpha_sl, self.negative_slope)
+        # eta = F.leaky_relu(alpha_sl, self.negative_slope)
 
         # Average over all the attention heads to get a single new structure
-        eta = torch.mean(eta, dim=1)
+        eta = torch.mean(alpha_sl, dim=1)
 
         # Get interaction probabilities
         eta = torch.sigmoid(eta)
