@@ -321,10 +321,14 @@ class GLAMConv(MessagePassing):
             # self.new_edges = (self.new_edges + given_edges) / 2
             self.new_edges = given_edges
 
+        # Detach everything from the structure learner
         if not train_structure:
-            self.new_edges = self.new_edges.detach()
-            alpha_sl = (alpha_sl[0].detach(), alpha_sl[1].detach())
+            x_src_sl = x_src_sl.detach()
+            x_dst_sl = x_dst_sl.detach()
+            alpha_src_sl = alpha_src_sl.detach()
+            alpha_dst_sl = alpha_dst_sl.detach()
             eta = eta.detach()
+            self.new_edges = self.new_edges.detach()
 
         # Sample edge indices
         '''
