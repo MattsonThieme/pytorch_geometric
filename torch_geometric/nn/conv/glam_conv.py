@@ -235,7 +235,7 @@ class GLAMConv(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, new_edges: Tensor, train_structure: bool, drop_prob: float,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, tau: float, given_edges: Tensor, train_structure: bool,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -261,81 +261,85 @@ class GLAMConv(MessagePassing):
         # Structure Learning
         ##################################################################
 
-        self.dropout = drop_prob
+        H_sl, C_sl = self.heads_sl, self.out_channels_sl
 
-        # If new_edges is passed, this is not the first layer. Use the new_edges found by the first layer
-        if isinstance(new_edges, Tensor):
-            self.new_edges = new_edges[:, :self.heads]
-            eta = None
+        # We first transform the input node features. If a tuple is passed, we
+        # transform source and target node features via separate weights:
+        if isinstance(x, Tensor):
+            assert x.dim() == 2, "Static graphs not supported in 'GATConv'"
+            x_src_sl = x_dst_sl = self.lin_src_sl(x).view(-1, H_sl, C_sl)
+        else:  # Tuple of source and target node features:
+            x_src_sl, x_dst_sl = x
+            assert x_src_sl.dim() == 2, "Static graphs not supported in 'GATConv'"
+            x_src_sl = self.lin_src_sl(x_src_sl).view(-1, H_sl, C_sl)
+            if x_dst_sl is not None:
+                x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
 
+        x_sl = (x_src_sl, x_dst_sl)
+
+        # Next, we compute node-level attention coefficients, both for source
+        # and target nodes (if present):
+        alpha_src_sl = (x_src_sl * self.att_src_sl).sum(-1)
+        alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
+
+        if self.bias_sl == None:
+            pass
         else:
-            H_sl, C_sl = self.heads_sl, self.out_channels_sl
+            alpha_src_sl = alpha_src_sl + self.bias_sl
+            alpha_dst_sl = alpha_dst_sl + self.bias_sl
 
-            # We first transform the input node features. If a tuple is passed, we
-            # transform source and target node features via separate weights:
-            if isinstance(x, Tensor):
-                assert x.dim() == 2, "Static graphs not supported in 'GATConv'"
-                x_src_sl = x_dst_sl = self.lin_src_sl(x).view(-1, H_sl, C_sl)
-            else:  # Tuple of source and target node features:
-                x_src_sl, x_dst_sl = x
-                assert x_src_sl.dim() == 2, "Static graphs not supported in 'GATConv'"
-                x_src_sl = self.lin_src_sl(x_src_sl).view(-1, H_sl, C_sl)
+        alpha_sl = (alpha_src_sl, alpha_dst_sl)
+
+        if self.add_self_loops:
+            if isinstance(edge_index, Tensor):
+                # We only want to add self-loops for nodes that appear both as
+                # source and target nodes:
+                num_nodes = x_src_sl.size(0)
                 if x_dst_sl is not None:
-                    x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
+                    num_nodes = min(num_nodes, x_dst_sl.size(0))
+                num_nodes = min(size) if size is not None else num_nodes
+                edge_index, edge_attr = remove_self_loops(
+                    edge_index, edge_attr)
+                edge_index, edge_attr = add_self_loops(
+                    edge_index, edge_attr, fill_value=self.fill_value,
+                    num_nodes=num_nodes)
+            elif isinstance(edge_index, SparseTensor):
+                if self.edge_dim is None:
+                    edge_index = set_diag(edge_index)
+                else:
+                    raise NotImplementedError(
+                        "The usage of 'edge_attr' and 'add_self_loops' "
+                        "simultaneously is currently not yet supported for "
+                        "'edge_index' in a 'SparseTensor' form")
 
-            x_sl = (x_src_sl, x_dst_sl)
+        # Calculate edge probabilities
+        eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
+        self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
 
-            # Next, we compute node-level attention coefficients, both for source
-            # and target nodes (if present):
-            alpha_src_sl = (x_src_sl * self.att_src_sl).sum(-1)
-            alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
+        # If new_edges is passed, this is not the first layer. Train on only those new_edges found by the first layer
+        if isinstance(given_edges, Tensor):
+            # self.new_edges = (self.new_edges + given_edges) / 2
+            self.new_edges = given_edges
 
-            if self.bias_sl == None:
-                pass
-            else:
-                alpha_src_sl = alpha_src_sl + self.bias_sl
-                alpha_dst_sl = alpha_dst_sl + self.bias_sl
+        if not train_structure:
+            self.new_edges = self.new_edges.detach()
+            alpha_sl = (alpha_sl[0].detach(), alpha_sl[1].detach())
+            eta = eta.detach()
 
-            alpha_sl = (alpha_src_sl, alpha_dst_sl)
-
-            if self.add_self_loops:
-                if isinstance(edge_index, Tensor):
-                    # We only want to add self-loops for nodes that appear both as
-                    # source and target nodes:
-                    num_nodes = x_src_sl.size(0)
-                    if x_dst_sl is not None:
-                        num_nodes = min(num_nodes, x_dst_sl.size(0))
-                    num_nodes = min(size) if size is not None else num_nodes
-                    edge_index, edge_attr = remove_self_loops(
-                        edge_index, edge_attr)
-                    edge_index, edge_attr = add_self_loops(
-                        edge_index, edge_attr, fill_value=self.fill_value,
-                        num_nodes=num_nodes)
-                elif isinstance(edge_index, SparseTensor):
-                    if self.edge_dim is None:
-                        edge_index = set_diag(edge_index)
-                    else:
-                        raise NotImplementedError(
-                            "The usage of 'edge_attr' and 'add_self_loops' "
-                            "simultaneously is currently not yet supported for "
-                            "'edge_index' in a 'SparseTensor' form")
-
-            # Sample edge indices
-            if train_structure:
-                # First, get structure learning scores n_ij
-                eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-                self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
-                # self.begun_training = True
-            else:
-                # if self.begun_training:
-                #     eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-                #     self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes).detach()
-                # else:
-                self.new_edges = torch.ones(edge_index.shape[1], self.heads)  # Original
-                # self.new_edges = torch.cat((self.new_edges, torch.zeros(edge_index.shape[1] - 10556 - x.shape[0], self.heads)))  # Noise
-                # self.new_edges = torch.cat((self.new_edges, torch.ones(x.shape[0], self.heads)))  # self loops
-                eta = torch.zeros(edge_index.shape[1], self.heads)
-                # self.new_edges = self.sample_eta(eta, tau=tau).detach()
+        # Sample edge indices
+        '''
+        if train_structure:
+            # First, get structure learning scores n_ij
+            pass
+        else:
+            # self.new_edges = torch.ones(edge_index.shape[1], self.heads)  # Original
+            # self.new_edges = torch.cat((self.new_edges, torch.zeros(edge_index.shape[1] - 10556 - x.shape[0], self.heads)))  # Noise
+            # self.new_edges = torch.cat((self.new_edges, torch.ones(x.shape[0], self.heads)))  # self loops
+            # eta = torch.zeros(edge_index.shape[1], self.heads)
+            # self.new_edges = self.sample_eta(eta, tau=tau).detach()
+            eta = eta.detach()
+            self.new_edges = self.new_edges.detach()
+        '''
 
         ##################################################################
         # Graph Attention
