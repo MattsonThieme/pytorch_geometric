@@ -466,9 +466,14 @@ class GLAMConv(MessagePassing):
             alpha_edge = (edge_attr * self.att_edge).sum(dim=-1)
             alpha = alpha + alpha_edge
 
+        # Apply the mask but keep the self-loops
+        # alpha = alpha - self.new_edges * 1e6
+
         alpha = F.leaky_relu(alpha, self.negative_slope)
 
         # alpha = softmax(alpha, index, ptr, size_i)
+
+        # alpha = alpha * self.new_edges
 
         # Renormalize to sum to 1 (identical to softmax for non-masked elements)
         alpha = self.renorm(alpha, index, size_i)
@@ -480,27 +485,42 @@ class GLAMConv(MessagePassing):
     def renorm(self, alpha: Tensor, index: Tensor, num_nodes: int) -> Tensor:
 
         # For softmax calculation
-        retained = index[self.new_edges[:, 0] == 1]
-        alpha_non_zero = alpha[self.new_edges[:, 0] == 1]
+        # retained = index[self.new_edges[:, 0] == 1]
+        # alpha_non_zero = alpha[self.new_edges[:, 0] == 1]
+
+        # Mask alpha
+        alpha = alpha * self.new_edges
 
         # Get max
-        alpha_non_zero_max = scatter(alpha, index, 0, dim_size=num_nodes, reduce='max')
-        alpha_non_zero_max = alpha_non_zero_max.index_select(0, retained)
+        alpha_max = scatter(alpha, index, 0, dim_size=num_nodes, reduce='max')
+        alpha_max = alpha_max.index_select(0, index)
+
+        # Mask again after index_select
+        alpha_max = alpha_max * self.new_edges
 
         # Exponentiate
-        exp = (alpha_non_zero - alpha_non_zero_max).exp()
+        exp = (alpha - alpha_max).exp()
+
+        # Mask again after exponentiation
+        exp = exp * self.new_edges
 
         # Insert the new softmax values
-        expanded = torch.zeros(alpha.shape)
-        expanded[self.new_edges[:, 0] == 1] = exp
-        expanded = expanded * self.new_edges
+        # expanded = torch.zeros(alpha.shape)
+        # expanded[self.new_edges[:, 0] == 1] = exp
+        # expanded = expanded * self.new_edges
 
         # Get sum
-        alpha_sum = scatter(expanded, index, 0, dim_size=num_nodes, reduce='sum')
+        alpha_sum = scatter(exp, index, 0, dim_size=num_nodes, reduce='sum')
         alpha_sum = alpha_sum.index_select(0, index)
 
+        # Mask one final time after index_select
+        alpha_sum = alpha_sum * self.new_edges
+
         # Final output
-        alpha = expanded / (alpha_sum + 1e-16)
+        alpha = exp / (alpha_sum + 1e-16)
+
+        # Norm as if these dropped edges were lost from dropout
+        # alpha = alpha / (torch.sum(self.new_edges)/torch.numel(self.new_edges))
 
         return alpha
 
