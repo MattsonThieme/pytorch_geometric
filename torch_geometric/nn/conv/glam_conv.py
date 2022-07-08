@@ -135,6 +135,7 @@ class GLAMConv(MessagePassing):
 
         # Dummy for new edges
         self.new_edges = None
+        self.begun_training = False
 
         ##################################################################
         # Standard GAT
@@ -324,7 +325,12 @@ class GLAMConv(MessagePassing):
                 # First, get structure learning scores n_ij
                 eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
                 self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
+                # self.begun_training = True
             else:
+                # if self.begun_training:
+                #     eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
+                #     self.new_edges = self.sample_eta(eta, tau=tau, num_nodes=num_nodes).detach()
+                # else:
                 self.new_edges = torch.ones(edge_index.shape[1], self.heads)  # Original
                 # self.new_edges = torch.cat((self.new_edges, torch.zeros(edge_index.shape[1] - 10556 - x.shape[0], self.heads)))  # Noise
                 # self.new_edges = torch.cat((self.new_edges, torch.ones(x.shape[0], self.heads)))  # self loops
@@ -466,14 +472,9 @@ class GLAMConv(MessagePassing):
             alpha_edge = (edge_attr * self.att_edge).sum(dim=-1)
             alpha = alpha + alpha_edge
 
-        # Apply the mask but keep the self-loops
-        # alpha = alpha - self.new_edges * 1e6
-
         alpha = F.leaky_relu(alpha, self.negative_slope)
 
         # alpha = softmax(alpha, index, ptr, size_i)
-
-        # alpha = alpha * self.new_edges
 
         # Renormalize to sum to 1 (identical to softmax for non-masked elements)
         alpha = self.renorm(alpha, index, size_i)
@@ -482,17 +483,14 @@ class GLAMConv(MessagePassing):
 
         return alpha
 
+    # Masked softmax - returns the softmax over only non-masked edges
     def renorm(self, alpha: Tensor, index: Tensor, num_nodes: int) -> Tensor:
 
-        # For softmax calculation
-        # retained = index[self.new_edges[:, 0] == 1]
-        # alpha_non_zero = alpha[self.new_edges[:, 0] == 1]
-
-        # Mask alpha
-        alpha = alpha * self.new_edges
+        # Shift the inputs at the mask positions so that we don't select them as the max
+        alpha_masked = alpha - (1 - self.new_edges) * 1e6
 
         # Get max
-        alpha_max = scatter(alpha, index, 0, dim_size=num_nodes, reduce='max')
+        alpha_max = scatter(alpha_masked, index, 0, dim_size=num_nodes, reduce='max')
         alpha_max = alpha_max.index_select(0, index)
 
         # Mask again after index_select
@@ -503,11 +501,6 @@ class GLAMConv(MessagePassing):
 
         # Mask again after exponentiation
         exp = exp * self.new_edges
-
-        # Insert the new softmax values
-        # expanded = torch.zeros(alpha.shape)
-        # expanded[self.new_edges[:, 0] == 1] = exp
-        # expanded = expanded * self.new_edges
 
         # Get sum
         alpha_sum = scatter(exp, index, 0, dim_size=num_nodes, reduce='sum')
@@ -526,7 +519,6 @@ class GLAMConv(MessagePassing):
 
     def message(self, x_j: Tensor, alpha: Tensor) -> Tensor:
         return alpha.unsqueeze(-1) * x_j
-        # return self.new_edges.unsqueeze(-1) * alpha.unsqueeze(-1) * x_j
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
