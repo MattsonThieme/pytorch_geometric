@@ -1,6 +1,7 @@
 from .degree import degree
 from .softmax import softmax
 from .softmax_mask import softmax_mask
+from .softmax_sign import softmax_sign
 from .dropout import dropout_adj
 from .sort_edge_index import sort_edge_index
 from .coalesce import coalesce
@@ -39,6 +40,7 @@ __all__ = [
     'degree',
     'softmax',
     'softmax_mask',
+    'softmax_sign',
     'dropout_adj',
     'sort_edge_index',
     'coalesce',
