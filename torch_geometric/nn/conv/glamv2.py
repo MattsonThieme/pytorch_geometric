@@ -205,6 +205,8 @@ class GLAMv2(MessagePassing):
         else:
             self.register_parameter('bias_sl', None)
 
+        self.tau = torch.tensor([1.])
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -244,6 +246,7 @@ class GLAMv2(MessagePassing):
         ##################################################################
         # Structure Learning
         ##################################################################
+
 
         if isinstance(given_structure, Tensor):
             self.mask = given_structure
@@ -306,7 +309,7 @@ class GLAMv2(MessagePassing):
 
             # Calculate edge probabilities
             eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-            self.mask = self.sample_eta(eta, tau=1, num_nodes=num_nodes)
+            self.mask = self.sample_eta(eta, tau=self.tau, num_nodes=num_nodes)
 
             # This creates a mask that only reveals the original edges
             # Using this, we get performance equivalent to that on the un-noised dataset
@@ -314,7 +317,6 @@ class GLAMv2(MessagePassing):
             # self.noise = torch.zeros((13540, self.heads))
             # self.self = torch.ones((2707, self.heads))
             # self.mask = torch.cat((self.orig, self.noise, self.self))
-
 
         # NOTE: attention weights will be returned whenever
         # `return_attention_weights` is set to a value, regardless of its
@@ -395,10 +397,12 @@ class GLAMv2(MessagePassing):
 
         # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
-        logits = torch.log(torch.cat((eta, 1 - eta + 1e-9), dim=1))
+        logits = torch.log(torch.cat((eta, 1 - eta + 1e-16), dim=1))
 
         # Get hard samples from the distribution
         hard = F.gumbel_softmax(logits, tau=tau, hard=True)
+        soft = F.gumbel_softmax(logits, tau=tau, hard=False)
+        hard = hard - soft.detach() + soft
 
         # Get samples for 1 - our predicted probabilities
         new_edges = hard[:, 0]
@@ -456,7 +460,7 @@ class GLAMv2(MessagePassing):
         alpha = F.leaky_relu(alpha, self.negative_slope)
         # alpha = softmax(alpha, index, ptr, size_i)
         alpha = self.renorm(alpha, index, size_i)
-        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+        # alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 
     # Masked softmax - returns the softmax over only non-masked edges
@@ -489,8 +493,16 @@ class GLAMv2(MessagePassing):
 
         # Final output
         alpha = exp / (alpha_sum + 1e-16)
+        '''
+        # Norm to compensate for the number of edges we dropped from each node
+        connections = self.mask.clone()  # .detach()
+        connections = connections.detach()
+        degrees = scatter(connections, index, 0, dim_size=num_nodes, reduce='sum')
+        degrees = degrees.index_select(0, index)
+        # degrees[degrees == 0] = 1
 
-        # Norm as if these dropped edges were lost from dropout
+        alpha = alpha / (degrees + 1e-16)
+        '''
         # alpha = alpha / (torch.sum(self.new_edges)/torch.numel(self.new_edges))
 
         return alpha
