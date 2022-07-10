@@ -264,6 +264,9 @@ class GLAMv2(MessagePassing):
                 if x_dst_sl is not None:
                     x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
 
+
+            # As indicated in Brody 2018 How attentive are graph attention networks?
+            # x_sl = (F.leaky_relu(x_src_sl, self.negative_slope), F.leaky_relu(x_dst_sl, self.negative_slope))
             x_sl = (x_src_sl, x_dst_sl)
 
             # Next, we compute node-level attention coefficients, both for source
@@ -303,7 +306,15 @@ class GLAMv2(MessagePassing):
 
             # Calculate edge probabilities
             eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-            self.mask = self.sample_eta(eta, tau=torch.tensor([1.0]), num_nodes=num_nodes)
+            self.mask = self.sample_eta(eta, tau=1, num_nodes=num_nodes)
+
+            # This creates a mask that only reveals the original edges
+            # Using this, we get performance equivalent to that on the un-noised dataset
+            # self.orig = torch.ones((10556, self.heads))
+            # self.noise = torch.zeros((13540, self.heads))
+            # self.self = torch.ones((2707, self.heads))
+            # self.mask = torch.cat((self.orig, self.noise, self.self))
+
 
         # NOTE: attention weights will be returned whenever
         # `return_attention_weights` is set to a value, regardless of its
@@ -418,8 +429,6 @@ class GLAMv2(MessagePassing):
             edge_attr = edge_attr.view(-1, self.heads_sl, self.out_channels_sl)
             alpha_edge_sl = (edge_attr * self.att_edge_sl).sum(dim=-1)
             alpha_sl = alpha_sl + alpha_edge_sl
-
-        # eta = F.leaky_relu(alpha_sl, self.negative_slope)
 
         # Average over all the attention heads to get a single new structure
         eta = torch.mean(alpha_sl, dim=1)
