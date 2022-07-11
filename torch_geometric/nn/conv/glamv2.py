@@ -189,6 +189,12 @@ class GLAMv2(MessagePassing):
         self.att_src_sl = Parameter(torch.randn(1, self.heads_sl, self.out_channels_sl))
         self.att_dst_sl = Parameter(torch.randn(1, self.heads_sl, self.out_channels_sl))
 
+        # Learnable layers to compute structure learning similarity scores
+        # self.att_src_sl = Linear(self.heads_sl * self.out_channels_sl, 32,
+        #                          bias=False, weight_initializer='glorot')
+        # self.att_dst_sl = Linear(self.heads_sl * self.out_channels_sl, 32,
+        #                          bias=False, weight_initializer='glorot')
+
         if edge_dim is not None:
             self.lin_edge_sl = Linear(edge_dim, self.heads_sl * self.out_channels_sl, bias=False,
                                       weight_initializer='glorot')
@@ -204,8 +210,6 @@ class GLAMv2(MessagePassing):
             self.bias_sl = Parameter(torch.Tensor(self.heads_sl))
         else:
             self.register_parameter('bias_sl', None)
-
-        self.tau = torch.tensor([1.])
 
         self.reset_parameters()
 
@@ -225,10 +229,12 @@ class GLAMv2(MessagePassing):
             self.lin_edge_sl.reset_parameters()
         glorot(self.att_src_sl)
         glorot(self.att_dst_sl)
+        # self.att_src_sl.reset_parameters()
+        # self.att_dst_sl.reset_parameters()
         glorot(self.att_edge_sl)
         zeros(self.bias_sl)
 
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, given_structure: Tensor,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, given_structure: Tensor, tau: Tensor, train_structure: bool,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -247,10 +253,9 @@ class GLAMv2(MessagePassing):
         # Structure Learning
         ##################################################################
 
-
         if isinstance(given_structure, Tensor):
             self.mask = given_structure
-            eta = torch.tensor([])
+            eta = None
         else:
 
             H_sl, C_sl = self.heads_sl, self.out_channels_sl
@@ -267,7 +272,6 @@ class GLAMv2(MessagePassing):
                 if x_dst_sl is not None:
                     x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
 
-
             # As indicated in Brody 2018 How attentive are graph attention networks?
             # x_sl = (F.leaky_relu(x_src_sl, self.negative_slope), F.leaky_relu(x_dst_sl, self.negative_slope))
             x_sl = (x_src_sl, x_dst_sl)
@@ -276,6 +280,9 @@ class GLAMv2(MessagePassing):
             # and target nodes (if present):
             alpha_src_sl = (x_src_sl * self.att_src_sl).sum(-1)
             alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
+
+            # alpha_src_sl = self.att_src_sl(x_src_sl.view(x_src_sl.shape[0], -1))
+            # alpha_dst_sl = self.att_dst_sl(x_dst_sl.view(x_dst_sl.shape[0], -1))
 
             if self.bias_sl == None:
                 pass
@@ -309,7 +316,7 @@ class GLAMv2(MessagePassing):
 
             # Calculate edge probabilities
             eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-            self.mask = self.sample_eta(eta, tau=self.tau, num_nodes=num_nodes)
+            self.mask = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
 
             # This creates a mask that only reveals the original edges
             # Using this, we get performance equivalent to that on the un-noised dataset
@@ -317,6 +324,9 @@ class GLAMv2(MessagePassing):
             # self.noise = torch.zeros((13540, self.heads))
             # self.self = torch.ones((2707, self.heads))
             # self.mask = torch.cat((self.orig, self.noise, self.self))
+
+        if not train_structure:
+            self.mask = torch.ones(self.mask.shape)
 
         # NOTE: attention weights will be returned whenever
         # `return_attention_weights` is set to a value, regardless of its
@@ -401,14 +411,11 @@ class GLAMv2(MessagePassing):
 
         # Get hard samples from the distribution
         hard = F.gumbel_softmax(logits, tau=tau, hard=True)
-        soft = F.gumbel_softmax(logits, tau=tau, hard=False)
-        hard = hard - soft.detach() + soft
+        # soft = F.gumbel_softmax(logits, tau=tau, hard=False)
+        # hard = hard - soft.detach() + soft
 
         # Get samples for 1 - our predicted probabilities
         new_edges = hard[:, 0]
-
-        # Apply dropout to our mask, then renormalize
-        # new_edges = F.dropout(new_edges, p=self.dropout, training=self.training) * (1 - self.dropout)
 
         # Retain the self loops by setting the drop probability to zero
         # new_edges[-num_nodes:] = 1
@@ -459,8 +466,9 @@ class GLAMv2(MessagePassing):
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
         # alpha = softmax(alpha, index, ptr, size_i)
+        # alpha = alpha * self.mask
         alpha = self.renorm(alpha, index, size_i)
-        # alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 
     # Masked softmax - returns the softmax over only non-masked edges
@@ -493,17 +501,6 @@ class GLAMv2(MessagePassing):
 
         # Final output
         alpha = exp / (alpha_sum + 1e-16)
-        '''
-        # Norm to compensate for the number of edges we dropped from each node
-        connections = self.mask.clone()  # .detach()
-        connections = connections.detach()
-        degrees = scatter(connections, index, 0, dim_size=num_nodes, reduce='sum')
-        degrees = degrees.index_select(0, index)
-        # degrees[degrees == 0] = 1
-
-        alpha = alpha / (degrees + 1e-16)
-        '''
-        # alpha = alpha / (torch.sum(self.new_edges)/torch.numel(self.new_edges))
 
         return alpha
 
