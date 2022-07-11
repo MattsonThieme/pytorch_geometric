@@ -204,10 +204,10 @@ class GLAMv2(MessagePassing):
             self.register_parameter('att_edge_sl', None)
 
         if bias and concat:
-            self.bias_sl = Parameter(torch.Tensor(self.heads_sl))
+            self.bias_sl = Parameter(torch.Tensor(self.heads_sl * self.out_channels_sl))
 
         elif bias and not concat:
-            self.bias_sl = Parameter(torch.Tensor(self.heads_sl))
+            self.bias_sl = Parameter(torch.Tensor(self.heads_sl * self.out_channels_sl))
         else:
             self.register_parameter('bias_sl', None)
 
@@ -229,8 +229,6 @@ class GLAMv2(MessagePassing):
             self.lin_edge_sl.reset_parameters()
         glorot(self.att_src_sl)
         glorot(self.att_dst_sl)
-        # self.att_src_sl.reset_parameters()
-        # self.att_dst_sl.reset_parameters()
         glorot(self.att_edge_sl)
         zeros(self.bias_sl)
 
@@ -284,7 +282,7 @@ class GLAMv2(MessagePassing):
             # alpha_src_sl = self.att_src_sl(x_src_sl.view(x_src_sl.shape[0], -1))
             # alpha_dst_sl = self.att_dst_sl(x_dst_sl.view(x_dst_sl.shape[0], -1))
 
-            if self.bias_sl == None:
+            if not self.bias_sl:
                 pass
             else:
                 alpha_src_sl = alpha_src_sl + self.bias_sl
@@ -407,6 +405,7 @@ class GLAMv2(MessagePassing):
 
         # Input should be log probabilities
         # Add a dimension with 1 - probability (for Gumbel softmax)
+
         logits = torch.log(torch.cat((eta, 1 - eta + 1e-6), dim=1))
 
         # Get hard samples from the distribution
@@ -447,6 +446,12 @@ class GLAMv2(MessagePassing):
         # Get interaction probabilities
         eta = torch.sigmoid(eta)
 
+        # Ensure we never hit zero or one
+        offset_up = (eta == 0) * 1e-6
+        offset_down = (eta == 1) * (1 - 1e-6)
+
+        eta = eta + offset_up - offset_down
+
         return eta.unsqueeze(1)
 
     def edge_update(self, alpha_j: Tensor, alpha_i: OptTensor,
@@ -477,7 +482,7 @@ class GLAMv2(MessagePassing):
         # self.mask = torch.ones(alpha.shape)
 
         # Shift the inputs at the mask positions so that we don't select them as the max
-        alpha_masked = alpha - (1 - self.mask) * 1e6
+        alpha_masked = alpha - (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
 
         # Get max
         alpha_max = scatter(alpha_masked, index, 0, dim_size=num_nodes, reduce='max')
