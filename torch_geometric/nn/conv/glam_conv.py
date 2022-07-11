@@ -214,6 +214,8 @@ class GLAMConv(MessagePassing):
         else:
             self.register_parameter('bias_sl', None)
 
+        self.tau = torch.tensor([1.], requires_grad=True)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -438,7 +440,7 @@ class GLAMConv(MessagePassing):
         logits = torch.log(torch.cat((eta, 1 - eta + 1e-9), dim=1))
 
         # Get hard samples from the distribution
-        hard = F.gumbel_softmax(logits, tau=tau, hard=True)
+        hard = F.gumbel_softmax(logits, tau=self.tau, hard=True)
 
         # Get samples for 1 - our predicted probabilities
         new_edges = hard[:, 0]

@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Parameter
 from torch_sparse import SparseTensor, set_diag
-from torch_scatter import scatter
 
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.dense.linear import Linear
@@ -16,12 +15,12 @@ from torch_geometric.typing import (
     OptTensor,
     Size,
 )
-from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
+from torch_geometric.utils import add_self_loops, remove_self_loops, softmax, softmax_sign
 
 from ..inits import glorot, zeros
 
 
-class GLAMv2(MessagePassing):
+class GATConvSign(MessagePassing):
     r"""The graph attentional operator from the `"Graph Attention Networks"
     <https://arxiv.org/abs/1710.10903>`_ paper
 
@@ -131,10 +130,6 @@ class GLAMv2(MessagePassing):
         self.edge_dim = edge_dim
         self.fill_value = fill_value
 
-        ##################################################################
-        # GAT heads
-        ##################################################################
-
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
         if isinstance(in_channels, int):
@@ -166,54 +161,6 @@ class GLAMv2(MessagePassing):
         else:
             self.register_parameter('bias', None)
 
-        ##################################################################
-        # Structure Learning heads
-        ##################################################################
-
-        self.heads_sl = 8
-        self.out_channels_sl = 64
-
-        # Final transformation for the attention coefficients
-        self.trans_sl = Linear(self.heads, 1, bias=True, weight_initializer='glorot')
-
-        # In case we are operating in bipartite graphs, we apply separate
-        # transformations 'lin_src' and 'lin_dst' to source and target nodes:
-        if isinstance(in_channels, int):
-            self.lin_src_sl = Linear(in_channels, self.heads_sl * self.out_channels_sl,
-                                     bias=False, weight_initializer='glorot')
-            self.lin_dst_sl = self.lin_src_sl
-        else:
-            self.lin_src_sl = Linear(in_channels[0], self.heads_sl * self.out_channels_sl, False,
-                                     weight_initializer='glorot')
-            self.lin_dst_sl = Linear(in_channels[1], self.heads_sl * self.out_channels_sl, False,
-                                     weight_initializer='glorot')
-
-        # The learnable parameters to compute attention coefficients:
-        self.att_src_sl = Parameter(torch.randn(1, self.heads_sl, self.out_channels_sl))
-        self.att_dst_sl = Parameter(torch.randn(1, self.heads_sl, self.out_channels_sl))
-
-        # Learnable layers to compute structure learning similarity scores
-        # self.att_src_sl = Linear(self.heads_sl * self.out_channels_sl, 32,
-        #                          bias=False, weight_initializer='glorot')
-        # self.att_dst_sl = Linear(self.heads_sl * self.out_channels_sl, 32,
-        #                          bias=False, weight_initializer='glorot')
-
-        if edge_dim is not None:
-            self.lin_edge_sl = Linear(edge_dim, self.heads_sl * self.out_channels_sl, bias=False,
-                                      weight_initializer='glorot')
-            self.att_edge_sl = Parameter(torch.Tensor(1, self.heads_sl, self.out_channels_sl))
-        else:
-            self.lin_edge_sl = None
-            self.register_parameter('att_edge_sl', None)
-
-        if bias and concat:
-            self.bias_sl = Parameter(torch.Tensor(self.heads_sl * self.out_channels_sl))
-
-        elif bias and not concat:
-            self.bias_sl = Parameter(torch.Tensor(self.heads_sl * self.out_channels_sl))
-        else:
-            self.register_parameter('bias_sl', None)
-
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -226,16 +173,7 @@ class GLAMv2(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-        self.lin_src_sl.reset_parameters()
-        self.lin_dst_sl.reset_parameters()
-        if self.lin_edge_sl is not None:
-            self.lin_edge_sl.reset_parameters()
-        glorot(self.att_src_sl)
-        glorot(self.att_dst_sl)
-        glorot(self.att_edge_sl)
-        zeros(self.bias_sl)
-
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, given_structure: Tensor, tau: Tensor, train_structure: bool,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -249,86 +187,6 @@ class GLAMv2(MessagePassing):
                 :obj:`(edge_index, attention_weights)`, holding the computed
                 attention weights for each edge. (default: :obj:`None`)
         """
-
-        ##################################################################
-        # Structure Learning
-        ##################################################################
-
-        if isinstance(given_structure, Tensor):
-            self.mask = given_structure
-            eta = None
-        else:
-
-            H_sl, C_sl = self.heads_sl, self.out_channels_sl
-
-            # We first transform the input node features. If a tuple is passed, we
-            # transform source and target node features via separate weights:
-            if isinstance(x, Tensor):
-                assert x.dim() == 2, "Static graphs not supported in 'GATConv'"
-                x_src_sl = x_dst_sl = self.lin_src_sl(x).view(-1, H_sl, C_sl)
-            else:  # Tuple of source and target node features:
-                x_src_sl, x_dst_sl = x
-                assert x_src_sl.dim() == 2, "Static graphs not supported in 'GATConv'"
-                x_src_sl = self.lin_src_sl(x_src_sl).view(-1, H_sl, C_sl)
-                if x_dst_sl is not None:
-                    x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
-
-            # As indicated in Brody 2018 How attentive are graph attention networks?
-            # x_sl = (F.leaky_relu(x_src_sl, self.negative_slope), F.leaky_relu(x_dst_sl, self.negative_slope))
-            x_sl = (x_src_sl, x_dst_sl)
-
-            # Next, we compute node-level attention coefficients, both for source
-            # and target nodes (if present):
-            alpha_src_sl = (x_src_sl * self.att_src_sl).sum(-1)
-            alpha_dst_sl = None if x_dst_sl is None else (x_dst_sl * self.att_dst_sl).sum(-1)
-
-            # alpha_src_sl = self.att_src_sl(x_src_sl.view(x_src_sl.shape[0], -1))
-            # alpha_dst_sl = self.att_dst_sl(x_dst_sl.view(x_dst_sl.shape[0], -1))
-
-            if not self.bias_sl:
-                pass
-            else:
-                alpha_src_sl = alpha_src_sl + self.bias_sl
-                alpha_dst_sl = alpha_dst_sl + self.bias_sl
-
-            alpha_sl = (alpha_src_sl, alpha_dst_sl)
-
-            if self.add_self_loops:
-                if isinstance(edge_index, Tensor):
-                    # We only want to add self-loops for nodes that appear both as
-                    # source and target nodes:
-                    num_nodes = x_src_sl.size(0)
-                    if x_dst_sl is not None:
-                        num_nodes = min(num_nodes, x_dst_sl.size(0))
-                    num_nodes = min(size) if size is not None else num_nodes
-                    edge_index, edge_attr = remove_self_loops(
-                        edge_index, edge_attr)
-                    edge_index, edge_attr = add_self_loops(
-                        edge_index, edge_attr, fill_value=self.fill_value,
-                        num_nodes=num_nodes)
-                elif isinstance(edge_index, SparseTensor):
-                    if self.edge_dim is None:
-                        edge_index = set_diag(edge_index)
-                    else:
-                        raise NotImplementedError(
-                            "The usage of 'edge_attr' and 'add_self_loops' "
-                            "simultaneously is currently not yet supported for "
-                            "'edge_index' in a 'SparseTensor' form")
-
-            # Calculate edge probabilities
-            eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
-            self.mask = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
-
-            # This creates a mask that only reveals the original edges
-            # Using this, we get performance equivalent to that on the un-noised dataset
-            # self.orig = torch.ones((10556, self.heads))
-            # self.noise = torch.zeros((13540, self.heads))
-            # self.self = torch.ones((2707, self.heads))
-            # self.mask = torch.cat((self.orig, self.noise, self.self))
-
-        if not train_structure:
-            self.mask = torch.ones(self.mask.shape)
-
         # NOTE: attention weights will be returned whenever
         # `return_attention_weights` is set to a value, regardless of its
         # actual value (might be `True` or `False`). This is a current somewhat
@@ -401,65 +259,7 @@ class GLAMv2(MessagePassing):
             elif isinstance(edge_index, SparseTensor):
                 return out, edge_index.set_value(alpha, layout='coo')
         else:
-            return out, self.mask, eta
-
-    # Sample new edges from the structure learning scores
-    def sample_eta(self, eta: Tensor, tau: float, num_nodes: int) -> Tensor:
-
-        # Input should be log probabilities
-        # Add a dimension with 1 - probability (for Gumbel softmax)
-
-        logits = torch.log(torch.cat((eta, 1 - eta), dim=1))
-
-        # Get hard samples from the distribution
-        hard = F.gumbel_softmax(logits, tau=tau, hard=True)
-        # soft = F.gumbel_softmax(logits, tau=tau, hard=False)
-        # hard = hard - soft.detach() + soft
-
-        # Get samples for 1 - our predicted probabilities
-        new_edges = hard[:, 0]
-
-        # Retain the self loops by setting the drop probability to zero
-        # new_edges[-num_nodes:] = 1
-
-        # Expand dims to match alpha
-        new_edges = new_edges.unsqueeze(1).expand(new_edges.shape[0], self.heads)
-
-        return new_edges
-
-    # Get structure learning scores, eta
-    def edge_update_sls(self, alpha_j: Tensor, alpha_i: OptTensor,
-                        edge_attr: OptTensor, index: Tensor, ptr: OptTensor,
-                        size_i: Optional[int]) -> Tensor:
-        # Given edge-level attention coefficients for source and target nodes,
-        # we simply need to sum them up to "emulate" concatenation:
-        alpha_sl = alpha_j if alpha_i is None else alpha_j + alpha_i
-
-        if edge_attr is not None and self.lin_edge is not None:
-            if edge_attr.dim() == 1:
-                edge_attr = edge_attr.view(-1, 1)
-            edge_attr = self.lin_edge_sl(edge_attr)
-            edge_attr = edge_attr.view(-1, self.heads_sl, self.out_channels_sl)
-            alpha_edge_sl = (edge_attr * self.att_edge_sl).sum(dim=-1)
-            alpha_sl = alpha_sl + alpha_edge_sl
-
-        # Average over all the attention heads to get a single new structure
-        # eta = torch.mean(alpha_sl, dim=1)
-        eta = self.trans_sl(alpha_sl).view(-1)
-
-        # Get interaction probabilities
-        eta = torch.sigmoid(eta)
-
-        # Ensure we never hit zero or one
-        # offset_up = (eta == 0) * 1e-6
-        # offset_down = (eta == 1) * (1 - 1e-6)
-
-        # eta = eta + offset_up - offset_down
-
-        eta = eta + 1e-6
-        eta = eta * (1 - 2e-3)
-
-        return eta.unsqueeze(1)
+            return out
 
     def edge_update(self, alpha_j: Tensor, alpha_i: OptTensor,
                     edge_attr: OptTensor, index: Tensor, ptr: OptTensor,
@@ -477,43 +277,8 @@ class GLAMv2(MessagePassing):
             alpha = alpha + alpha_edge
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        # alpha = softmax(alpha, index, ptr, size_i)
-        # alpha = alpha * self.mask
-        alpha = self.renorm(alpha, index, size_i)
+        alpha = softmax_sign(alpha, index, ptr, size_i)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
-        return alpha
-
-    # Masked softmax - returns the softmax over only non-masked edges
-    def renorm(self, alpha: Tensor, index: Tensor, num_nodes: int) -> Tensor:
-
-        # self.mask = torch.ones(alpha.shape)
-
-        # Shift the inputs at the mask positions so that we don't select them as the max
-        alpha_masked = alpha - (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
-
-        # Get max
-        alpha_max = scatter(alpha_masked, index, 0, dim_size=num_nodes, reduce='max')
-        alpha_max = alpha_max.index_select(0, index)
-
-        # Mask again after index_select
-        # alpha_max = alpha_max * self.mask
-
-        # Exponentiate
-        exp = (alpha - alpha_max).exp()
-
-        # Mask again after exponentiation
-        exp = exp * self.mask
-
-        # Get sum
-        alpha_sum = scatter(exp, index, 0, dim_size=num_nodes, reduce='sum')
-        alpha_sum = alpha_sum.index_select(0, index)
-
-        # Mask one final time after index_select
-        alpha_sum = alpha_sum * self.mask
-
-        # Final output
-        alpha = exp / (alpha_sum + 1e-16)
-
         return alpha
 
     def message(self, x_j: Tensor, alpha: Tensor) -> Tensor:
