@@ -16,7 +16,7 @@ from torch_geometric.typing import (
     OptTensor,
     Size,
 )
-from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
+from torch_geometric.utils import add_self_loops, remove_self_loops, softmax, softmax_mask
 
 from ..inits import glorot, zeros
 
@@ -444,8 +444,8 @@ class GLAMv2(MessagePassing):
             alpha_sl = alpha_sl + alpha_edge_sl
 
         # Average over all the attention heads to get a single new structure
-        # eta = torch.mean(alpha_sl, dim=1)
-        eta = self.trans_sl(alpha_sl).view(-1)
+        eta = torch.mean(alpha_sl, dim=1)
+        # eta = self.trans_sl(alpha_sl).view(-1)
 
         # Get interaction probabilities
         eta = torch.sigmoid(eta)
@@ -480,6 +480,8 @@ class GLAMv2(MessagePassing):
         # alpha = softmax(alpha, index, ptr, size_i)
         # alpha = alpha * self.mask
         alpha = self.renorm(alpha, index, size_i)
+        # alpha = softmax_mask(alpha, self.mask, index, ptr, size_i)
+        # alpha = self.renorm2(alpha, index, size_i)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 
@@ -489,7 +491,7 @@ class GLAMv2(MessagePassing):
         # self.mask = torch.ones(alpha.shape)
 
         # Shift the inputs at the mask positions so that we don't select them as the max
-        alpha_masked = alpha - (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
+        alpha_masked = alpha - (self.mask * 1.1)  # (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
 
         # Get max
         alpha_max = scatter(alpha_masked, index, 0, dim_size=num_nodes, reduce='max')
@@ -509,12 +511,42 @@ class GLAMv2(MessagePassing):
         alpha_sum = alpha_sum.index_select(0, index)
 
         # Mask one final time after index_select
-        alpha_sum = alpha_sum * self.mask
+        # alpha_sum = alpha_sum * self.mask
 
         # Final output
         alpha = exp / (alpha_sum + 1e-16)
 
         return alpha
+
+    def renorm2(self, alpha: Tensor, index: Tensor, num_nodes: int):
+
+        # Mask shift the inputs so that we don't select them as the max
+        src_masked = alpha - (1 - self.mask)  # * 1e6
+
+        # Get max
+        src_max = scatter(src_masked, index, 0, dim_size=num_nodes, reduce='max')
+        src_max = src_max.index_select(0, index)
+
+        # Zero again after index_select
+        # src_masked = src_masked * self.mask
+
+        # Exponentiate
+        exp = (alpha - src_max).exp()
+
+        # Zero again after index_select
+        # exp = exp * self.mask
+
+        # Get sum
+        src_sum = scatter(exp, index, 0, dim_size=num_nodes, reduce='sum')
+        src_sum = src_sum.index_select(0, index)
+
+        # Zero one final time
+        src_sum = src_sum * self.mask
+
+        # Final output
+        out = exp / (src_sum + 1e-16)
+
+        return out
 
     def message(self, x_j: Tensor, alpha: Tensor) -> Tensor:
         return alpha.unsqueeze(-1) * x_j
