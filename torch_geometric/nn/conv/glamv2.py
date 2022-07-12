@@ -274,8 +274,8 @@ class GLAMv2(MessagePassing):
                     x_dst_sl = self.lin_dst_sl(x_dst_sl).view(-1, H_sl, C_sl)
 
             # As indicated in Brody 2018 How attentive are graph attention networks?
-            # x_sl = (F.leaky_relu(x_src_sl, self.negative_slope), F.leaky_relu(x_dst_sl, self.negative_slope))
-            x_sl = (x_src_sl, x_dst_sl)
+            x_sl = (F.elu(x_src_sl), F.elu(x_dst_sl))
+            # x_sl = (x_src_sl, x_dst_sl)
 
             # Next, we compute node-level attention coefficients, both for source
             # and target nodes (if present):
@@ -317,6 +317,7 @@ class GLAMv2(MessagePassing):
 
             # Calculate edge probabilities
             eta = self.edge_updater_sls(edge_index, alpha=alpha_sl, edge_attr=edge_attr)
+            # self.mask = self.bicat(eta)
             self.mask = self.sample_eta(eta, tau=tau, num_nodes=num_nodes)
 
             # This creates a mask that only reveals the original edges
@@ -328,6 +329,7 @@ class GLAMv2(MessagePassing):
 
         if not train_structure:
             self.mask = torch.ones(self.mask.shape)
+            self.mask[10556: 26804, :] *= 0
 
         # NOTE: attention weights will be returned whenever
         # `return_attention_weights` is set to a value, regardless of its
@@ -427,13 +429,24 @@ class GLAMv2(MessagePassing):
 
         return new_edges
 
+    # Sample eta using a simpler technique that exploits the binary nature of the problem, binary-categorical
+    def bicat(self, eta: Tensor):
+
+        eta = (eta - 0.5) / torch.abs(eta - 0.5)
+
+        # Shift from -1,1 to 0,1
+        eta = (eta + 1)/2
+
+        return eta.expand(eta.shape[0], self.heads)
+
     # Get structure learning scores, eta
     def edge_update_sls(self, alpha_j: Tensor, alpha_i: OptTensor,
                         edge_attr: OptTensor, index: Tensor, ptr: OptTensor,
                         size_i: Optional[int]) -> Tensor:
         # Given edge-level attention coefficients for source and target nodes,
         # we simply need to sum them up to "emulate" concatenation:
-        alpha_sl = alpha_j if alpha_i is None else alpha_j + alpha_i
+        alpha_sl = alpha_j if alpha_i is None else alpha_j - alpha_i
+        # alpha_sl = (alpha_j - alpha_i).abs()
 
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
@@ -447,17 +460,9 @@ class GLAMv2(MessagePassing):
         eta = torch.mean(alpha_sl, dim=1)
         # eta = self.trans_sl(alpha_sl).view(-1)
 
-        # Get interaction probabilities
-        eta = torch.sigmoid(eta)
-
-        # Ensure we never hit zero or one
-        # offset_up = (eta == 0) * 1e-6
-        # offset_down = (eta == 1) * (1 - 1e-6)
-
-        # eta = eta + offset_up - offset_down
-
-        eta = eta + 1e-6
-        eta = eta * (1 - 2e-3)
+        # Ensure we never hit zero or one with a custom padded sigmoid
+        pad = 1e-6
+        eta = (1 - pad) * (1 / (1 + (-eta).exp())) + pad / 2
 
         return eta.unsqueeze(1)
 
@@ -477,7 +482,7 @@ class GLAMv2(MessagePassing):
             alpha = alpha + alpha_edge
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        # alpha = softmax(alpha, index, ptr, size_i)
+        # alpha = softmax(alpha * self.mask, index, ptr, size_i)
         # alpha = alpha * self.mask
         alpha = self.renorm(alpha, index, size_i)
         # alpha = softmax_mask(alpha, self.mask, index, ptr, size_i)
@@ -491,7 +496,7 @@ class GLAMv2(MessagePassing):
         # self.mask = torch.ones(alpha.shape)
 
         # Shift the inputs at the mask positions so that we don't select them as the max
-        alpha_masked = alpha - (self.mask * 1.1)  # (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
+        alpha_masked = alpha - self.mask * 1.001  # (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
 
         # Get max
         alpha_max = scatter(alpha_masked, index, 0, dim_size=num_nodes, reduce='max')
@@ -511,42 +516,13 @@ class GLAMv2(MessagePassing):
         alpha_sum = alpha_sum.index_select(0, index)
 
         # Mask one final time after index_select
-        # alpha_sum = alpha_sum * self.mask
+        alpha_sum = alpha_sum * self.mask
 
         # Final output
         alpha = exp / (alpha_sum + 1e-16)
 
         return alpha
 
-    def renorm2(self, alpha: Tensor, index: Tensor, num_nodes: int):
-
-        # Mask shift the inputs so that we don't select them as the max
-        src_masked = alpha - (1 - self.mask)  # * 1e6
-
-        # Get max
-        src_max = scatter(src_masked, index, 0, dim_size=num_nodes, reduce='max')
-        src_max = src_max.index_select(0, index)
-
-        # Zero again after index_select
-        # src_masked = src_masked * self.mask
-
-        # Exponentiate
-        exp = (alpha - src_max).exp()
-
-        # Zero again after index_select
-        # exp = exp * self.mask
-
-        # Get sum
-        src_sum = scatter(exp, index, 0, dim_size=num_nodes, reduce='sum')
-        src_sum = src_sum.index_select(0, index)
-
-        # Zero one final time
-        src_sum = src_sum * self.mask
-
-        # Final output
-        out = exp / (src_sum + 1e-16)
-
-        return out
 
     def message(self, x_j: Tensor, alpha: Tensor) -> Tensor:
         return alpha.unsqueeze(-1) * x_j
