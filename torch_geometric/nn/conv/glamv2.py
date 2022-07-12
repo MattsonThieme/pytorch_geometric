@@ -174,7 +174,8 @@ class GLAMv2(MessagePassing):
         self.out_channels_sl = 64
 
         # Final transformation for the attention coefficients
-        self.trans_sl = Linear(self.heads, 1, bias=True, weight_initializer='glorot')
+        self.trans_sl1 = Linear(self.heads, 4, bias=False, weight_initializer='glorot')
+        self.trans_sl2 = Linear(4, 1, bias=False, weight_initializer='glorot')
 
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
@@ -432,7 +433,7 @@ class GLAMv2(MessagePassing):
     # Sample eta using a simpler technique that exploits the binary nature of the problem, binary-categorical
     def bicat(self, eta: Tensor):
 
-        eta = (eta - 0.5) / torch.abs(eta - 0.5)
+        eta = (eta - 0.5) / torch.abs(eta - 0.5 + 1e-16)
 
         # Shift from -1,1 to 0,1
         eta = (eta + 1)/2
@@ -445,8 +446,8 @@ class GLAMv2(MessagePassing):
                         size_i: Optional[int]) -> Tensor:
         # Given edge-level attention coefficients for source and target nodes,
         # we simply need to sum them up to "emulate" concatenation:
-        alpha_sl = alpha_j if alpha_i is None else alpha_j - alpha_i
-        # alpha_sl = (alpha_j - alpha_i).abs()
+        alpha_sl = alpha_j if alpha_i is None else alpha_j + alpha_i
+        # alpha_sl = (alpha_j + alpha_i)
 
         if edge_attr is not None and self.lin_edge is not None:
             if edge_attr.dim() == 1:
@@ -458,7 +459,8 @@ class GLAMv2(MessagePassing):
 
         # Average over all the attention heads to get a single new structure
         eta = torch.mean(alpha_sl, dim=1)
-        # eta = self.trans_sl(alpha_sl).view(-1)
+        # eta = F.elu(self.trans_sl1(alpha_sl))
+        # eta = self.trans_sl2(eta).view(-1)
 
         # Ensure we never hit zero or one with a custom padded sigmoid
         pad = 1e-6
@@ -496,7 +498,7 @@ class GLAMv2(MessagePassing):
         # self.mask = torch.ones(alpha.shape)
 
         # Shift the inputs at the mask positions so that we don't select them as the max
-        alpha_masked = alpha - self.mask * 1.001  # (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
+        alpha_masked = alpha - (1 - self.mask) * (alpha.max() - alpha.min())  # (1 - self.mask) * ((alpha.max() - alpha.min()) + 1e-6)  # 1e6
 
         # Get max
         alpha_max = scatter(alpha_masked, index, 0, dim_size=num_nodes, reduce='max')
