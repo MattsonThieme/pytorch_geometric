@@ -7,6 +7,7 @@ from .gravnet_conv import GravNetConv
 from .gated_graph_conv import GatedGraphConv
 from .res_gated_graph_conv import ResGatedGraphConv
 from .gat_conv import GATConv
+from .gat_conv_masked import GATConvMasked
 from .glam_conv import GLAMConv
 from .glamv2 import GLAMv2
 from .gat_conv_sign import GATConvSign
@@ -63,6 +64,7 @@ __all__ = [
     'GatedGraphConv',
     'ResGatedGraphConv',
     'GATConv',
+    'GATConvMasked',
     'GLAMConv',
     'GLAMv2',
     'GATConvSign',
