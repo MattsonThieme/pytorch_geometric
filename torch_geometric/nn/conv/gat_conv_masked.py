@@ -274,7 +274,7 @@ class GATConvMasked(MessagePassing):
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
             edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            # edge_reps = x_src_sl - x_dst_sl
+            # edge_reps = x_src_sl - x_dst_sl  # Makes the self loops zero and the model quickly learns to keep them all
 
             # New edge representations
             sl_scores = F.elu(self.mask_sl_1(edge_reps))
