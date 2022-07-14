@@ -144,6 +144,8 @@ class GATConvMasked(MessagePassing):
         self.mask_sl_1 = Linear(256, 64, bias=True, weight_initializer='glorot')
         self.mask_sl_2 = Linear(64, 1, bias=True, weight_initializer='glorot')
 
+        self.tau_sl = Parameter(torch.tensor([1.0]), requires_grad=True)
+
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
         if isinstance(in_channels, int):
@@ -174,6 +176,8 @@ class GATConvMasked(MessagePassing):
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
             self.register_parameter('bias', None)
+
+        self.num_nodes = None
 
         self.reset_parameters()
 
@@ -209,8 +213,10 @@ class GATConvMasked(MessagePassing):
         # arguments conditioned on type (`None` or `bool`), not based on its
         # actual value.
 
+        # Used for the structure learning
         x_input = x
 
+        self.num_nodes = x.shape[0]
 
         H, C = self.heads, self.out_channels
 
@@ -347,7 +353,7 @@ class GATConvMasked(MessagePassing):
         eps = 1e-3
         probs = scores * (1 - eps) + eps / 2
         logits = torch.log(torch.cat((probs, 1 - probs), dim=1))
-        hard = F.gumbel_softmax(logits, tau=1.0, hard=True)
+        hard = F.gumbel_softmax(logits, tau=self.tau_sl, hard=True)
         mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
 
         return mask
@@ -355,15 +361,13 @@ class GATConvMasked(MessagePassing):
     # Masked softmax - returns the softmax over only non-masked edges
     def sparse_softmax(self, alpha: Tensor, index: Tensor, mask: int) -> Tensor:
 
-        num_nodes = 2708
-
         # Get each neighborhood minimum
-        alpha_min = scatter(alpha, index, 0, dim_size=num_nodes, reduce='min')
+        alpha_min = scatter(alpha, index, 0, dim_size=self.num_nodes, reduce='min')
         alpha_min = alpha_min.index_select(0, index)
         alpha_shifted = alpha + ((1 - mask) * (alpha - (alpha - alpha_min)) - (1 - mask) * 1e-2)
 
         # Get max
-        alpha_max = scatter(alpha_shifted, index, 0, dim_size=num_nodes, reduce='max')
+        alpha_max = scatter(alpha_shifted, index, 0, dim_size=self.num_nodes, reduce='max')
         alpha_max = alpha_max.index_select(0, index)
 
         # Exponentiate
@@ -373,7 +377,7 @@ class GATConvMasked(MessagePassing):
         exp = exp * mask
 
         # Get sum
-        alpha_sum = scatter(exp, index, 0, dim_size=num_nodes, reduce='sum')
+        alpha_sum = scatter(exp, index, 0, dim_size=self.num_nodes, reduce='sum')
         alpha_sum = alpha_sum.index_select(0, index)
 
         # Mask one final time after index_select
