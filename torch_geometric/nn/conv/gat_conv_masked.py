@@ -131,6 +131,19 @@ class GATConvMasked(MessagePassing):
         self.edge_dim = edge_dim
         self.fill_value = fill_value
 
+        self.lin_src_sl_1 = Linear(in_channels, 256,
+                                   bias=True, weight_initializer='glorot')
+        self.lin_src_sl_2 = Linear(256, 128,
+                                   bias=True, weight_initializer='glorot')
+
+        self.lin_dst_sl_1 = Linear(in_channels, 256,
+                                   bias=True, weight_initializer='glorot')
+        self.lin_dst_sl_2 = Linear(256, 128,
+                                   bias=True, weight_initializer='glorot')
+
+        self.mask_layer_1 = Linear(256, 64, bias=True, weight_initializer='glorot')
+        self.mask_layer_2 = Linear(64, 1, bias=True, weight_initializer='glorot')
+
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
         if isinstance(in_channels, int):
@@ -166,8 +179,6 @@ class GATConvMasked(MessagePassing):
 
         self.mask = None
 
-        self.mask_layer = Linear(heads, 1, bias=False, weight_initializer='glorot')
-
     def reset_parameters(self):
         self.lin_src.reset_parameters()
         self.lin_dst.reset_parameters()
@@ -199,6 +210,8 @@ class GATConvMasked(MessagePassing):
         # `torch.jit._overload` decorator, as we can only change the output
         # arguments conditioned on type (`None` or `bool`), not based on its
         # actual value.
+
+        x_input = x
 
         self.mask = mask
 
@@ -247,15 +260,35 @@ class GATConvMasked(MessagePassing):
                         "'edge_index' in a 'SparseTensor' form")
 
         # edge_updater_type: (alpha: OptPairTensor, edge_attr: OptTensor)
-        alpha, mask, scores = self.edge_updater(edge_index, alpha=alpha, edge_attr=edge_attr)
+        alpha = self.edge_updater(edge_index, alpha=alpha, edge_attr=edge_attr)
 
         ####################################################################################
         ####################################################################################
 
+        if not isinstance(mask, Tensor):
+            # New structure learning representations
+            x_src_sl = F.elu(self.lin_src_sl_1(x_input))
+            x_src_sl = F.elu(self.lin_src_sl_2(x_src_sl))
 
+            x_dst_sl = F.elu(self.lin_dst_sl_1(x_input))
+            x_dst_sl = F.elu(self.lin_dst_sl_2(x_dst_sl))
 
+            # Lift and concatenate into their edge positions
+            x_src_sl = self.lift(x_src_sl, edge_index, 0)
+            x_dst_sl = self.lift(x_dst_sl, edge_index, 1)
+            edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
 
+            # New edge representations
+            sl_scores = F.elu(self.mask_layer_1(edge_reps))
+            sl_scores = torch.sigmoid(self.mask_layer_2(sl_scores))
 
+            # Generate the new mask
+            mask = self.get_mask(sl_scores)
+        else:
+            sl_scores = None
+
+        # Generate the masked attention coefficients
+        alpha = self.sparse_softmax(alpha, edge_index[1], mask)
 
         ####################################################################################
         ####################################################################################
@@ -277,7 +310,16 @@ class GATConvMasked(MessagePassing):
             elif isinstance(edge_index, SparseTensor):
                 return out, edge_index.set_value(alpha, layout='coo')
         else:
-            return out, mask, scores
+            return out, mask, sl_scores
+
+    # Lift the attention coefficients into position
+    # This is just broadcasting the node-level attention coefficients into edge-level
+    def lift(self, src: torch.Tensor, edge_index: torch.Tensor, dim: int) -> torch.Tensor:
+
+        index = edge_index[dim]
+        src = src.index_select(0, index)
+
+        return src
 
     def edge_update(self, alpha_j: Tensor, alpha_i: OptTensor,
                     edge_attr: OptTensor, index: Tensor, ptr: OptTensor,
@@ -294,28 +336,28 @@ class GATConvMasked(MessagePassing):
             alpha_edge = (edge_attr * self.att_edge).sum(dim=-1)
             alpha = alpha + alpha_edge
 
-        mask, scores = self.get_mask(alpha)
-        alpha = alpha * mask
+        # mask, scores = self.get_mask(alpha)
+        # alpha = alpha * mask
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        # alpha = softmax(alpha, index, ptr, size_i)
-        alpha = self.sparse_softmax(alpha, index, mask)
+        alpha = softmax(alpha, index, ptr, size_i)
+        # alpha = self.sparse_softmax(alpha, index, mask)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
-        return alpha, mask, scores
+        return alpha  # , mask, scores
 
-    def get_mask(self, alpha):
+    def get_mask(self, scores):
         if isinstance(self.mask, torch.Tensor):
             return self.mask, None
         else:
-
-            scores = torch.sigmoid(self.mask_layer(alpha))
-
             eps = 1e-3
-            # probs = torch.sigmoid(alpha.mean(dim=1)).unsqueeze(1)
             probs = scores * (1 - eps) + eps / 2
             logits = torch.log(torch.cat((probs, 1 - probs), dim=1))
             hard = F.gumbel_softmax(logits, tau=1.0, hard=True)
             mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
-        return mask, scores
+
+            # mask = torch.ones(mask.shape)
+            # mask[10566:10566+16248, :] *= 0
+
+        return mask
 
     # Masked softmax - returns the softmax over only non-masked edges
     def sparse_softmax(self, alpha: Tensor, index: Tensor, mask: int) -> Tensor:
