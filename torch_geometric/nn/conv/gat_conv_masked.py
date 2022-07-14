@@ -191,7 +191,7 @@ class GATConvMasked(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, mask,
+    def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, mask, pre_train,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
         # type: (Union[Tensor, OptPairTensor], Tensor, OptTensor, Size, NoneType) -> Tensor  # noqa
@@ -217,6 +217,8 @@ class GATConvMasked(MessagePassing):
         x_input = x
 
         self.num_nodes = x.shape[0]
+
+        self.pre_train = pre_train
 
         H, C = self.heads, self.out_channels
 
@@ -284,7 +286,9 @@ class GATConvMasked(MessagePassing):
 
             # New edge representations
             sl_scores = F.elu(self.mask_sl_1(edge_reps))
-            sl_scores = torch.sigmoid(self.mask_sl_2(sl_scores))
+            sl_scores = self.mask_sl_2(sl_scores)
+            # sl_scores = sl_scores + torch.randn(sl_scores.shape)
+            sl_scores = torch.sigmoid(sl_scores)
 
             # Generate the new mask
             mask = self.get_mask(sl_scores)
@@ -355,6 +359,14 @@ class GATConvMasked(MessagePassing):
         logits = torch.log(torch.cat((probs, 1 - probs), dim=1))
         hard = F.gumbel_softmax(logits, tau=self.tau_sl, hard=True)
         mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
+
+        # Just keep all the self loops
+        # mask = mask[:-self.num_nodes, :]
+        # mask = torch.cat((mask, torch.ones((self.num_nodes, self.heads))))
+
+        if self.pre_train:
+            mask = torch.ones(mask.shape)
+            mask[:-self.num_nodes, :] *= 0
 
         return mask
 
