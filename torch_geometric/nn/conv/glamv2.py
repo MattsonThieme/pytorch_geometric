@@ -390,7 +390,7 @@ class GLAMv2(MessagePassing):
         # Add logistic noise
         uniform = torch.rand(logits.shape).float()
         noise = torch.log(uniform + 1e-10) - torch.log(1 - uniform + 1e-10)
-        # logits = logits + noise
+        logits = logits + noise
 
         # Get hard samples from the distribution
         # hard = F.gumbel_softmax(logits, tau=tau, hard=True) # .detach()
@@ -400,9 +400,6 @@ class GLAMv2(MessagePassing):
 
         # Get samples for 1 - our predicted probabilities
         new_edges = new_edges[:, 0]
-
-        # Apply dropout to our mask, then renormalize
-        # new_edges = F.dropout(new_edges, p=self.dropout, training=self.training) * (1 - self.dropout)
 
         # Retain the self loops by setting the drop probability to zero
         # new_edges[-num_nodes:] = 1
@@ -471,7 +468,7 @@ class GLAMv2(MessagePassing):
             alpha = alpha + alpha_edge
 
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = softmax(alpha, index, ptr, size_i)
+        # alpha = softmax(alpha, index, ptr, size_i)
         # alpha = alpha * self.mask
         alpha = self.renorm(alpha, index, size_i)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
