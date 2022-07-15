@@ -6,6 +6,7 @@ from torch import Tensor
 from torch.nn import Parameter
 from torch_sparse import SparseTensor, set_diag
 from torch_scatter import scatter
+from torch.autograd import Variable
 
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.dense.linear import Linear
@@ -282,12 +283,14 @@ class GATConvMasked(MessagePassing):
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
             edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            # edge_reps = x_src_sl - x_dst_sl  # Makes the self loops zero and the model quickly learns to keep them all
+            # edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
+            # edge_reps = edge_reps / (edge_reps.max() - edge_reps.min())
+            # edge_reps = edge_reps - edge_reps.mean()
+
 
             # New edge representations
             sl_scores = F.elu(self.mask_sl_1(edge_reps))
             sl_scores = self.mask_sl_2(sl_scores)
-            # sl_scores = sl_scores + torch.randn(sl_scores.shape)
             sl_scores = torch.sigmoid(sl_scores)
 
             # Generate the new mask
@@ -344,21 +347,38 @@ class GATConvMasked(MessagePassing):
             alpha_edge = (edge_attr * self.att_edge).sum(dim=-1)
             alpha = alpha + alpha_edge
 
-        # mask, scores = self.get_mask(alpha)
-        # alpha = alpha * mask
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = softmax(alpha, index, ptr, size_i)
-        # alpha = self.sparse_softmax(alpha, index, mask)
-        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+        # alpha = softmax(alpha, index, ptr, size_i)
+        # alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha  # , mask, scores
 
     def get_mask(self, scores):
 
-        eps = 1e-3
+        eps = 1e-6
         probs = scores * (1 - eps) + eps / 2
         logits = torch.log(torch.cat((probs, 1 - probs), dim=1))
-        hard = F.gumbel_softmax(logits, tau=self.tau_sl, hard=True)
-        mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
+
+        # Gumbel noise
+        u = torch.rand(logits.shape).float()
+        noise = - torch.log(1e-10 - torch.log(u + 1e-10))
+
+        # Add to logits
+        logits = logits + Variable(noise)
+
+        # Add softmax
+        soft = F.softmax(logits, dim=1)
+
+        # Straight Gumbel way
+        # logits = torch.log(logits)
+        # hard = F.gumbel_softmax(logits, tau=self.tau_sl, hard=True)
+        # mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
+
+        # Soft trick way
+        _, k = soft.data.max(-1)
+        hard = torch.zeros(soft.shape)
+        hard = hard.zero_().scatter_(-1, k.view(logits.shape[:-1] + (1,)), 1.0)
+        y = Variable(hard - soft.data) + soft
+        mask = y[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
 
         # Just keep all the self loops
         # mask = mask[:-self.num_nodes, :]
@@ -366,7 +386,7 @@ class GATConvMasked(MessagePassing):
 
         if self.pre_train:
             mask = torch.ones(mask.shape)
-            mask[:-self.num_nodes, :] *= 0
+            # mask[:-self.num_nodes, :] *= 0
 
         return mask
 
@@ -397,6 +417,8 @@ class GATConvMasked(MessagePassing):
 
         # Final output
         alpha = exp / (alpha_sum + (1 - mask))
+
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
 
         return alpha
 
