@@ -132,20 +132,22 @@ class GATConvMasked(MessagePassing):
         self.edge_dim = edge_dim
         self.fill_value = fill_value
 
-        self.lin_src_sl_1 = Linear(in_channels, 256,
-                                   bias=True, weight_initializer='glorot')
-        self.lin_src_sl_2 = Linear(256, 128,
-                                   bias=True, weight_initializer='glorot')
+        self.lin_src_sl_1 = Linear(in_channels, 512,
+                                   bias=False, weight_initializer='glorot')
+        self.lin_src_sl_2 = Linear(512, 256,
+                                   bias=False, weight_initializer='glorot')
+        self.lin_src_sl_3 = Linear(256, 128,
+                                   bias=False, weight_initializer='glorot')
 
         self.lin_dst_sl_1 = Linear(in_channels, 256,
-                                   bias=True, weight_initializer='glorot')
+                                   bias=False, weight_initializer='glorot')
         self.lin_dst_sl_2 = Linear(256, 128,
-                                   bias=True, weight_initializer='glorot')
+                                   bias=False, weight_initializer='glorot')
 
-        self.mask_sl_1 = Linear(256, 64, bias=True, weight_initializer='glorot')
-        self.mask_sl_2 = Linear(64, 1, bias=True, weight_initializer='glorot')
+        self.mask_sl_1 = Linear(128, 64, bias=False, weight_initializer='glorot')
+        self.mask_sl_2 = Linear(64, 1, bias=False, weight_initializer='glorot')
 
-        self.tau_sl = Parameter(torch.tensor([1.0]), requires_grad=True)
+        self.tau_sl = Parameter(torch.tensor([2.0]), requires_grad=False)
 
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
@@ -275,6 +277,7 @@ class GATConvMasked(MessagePassing):
             # New structure learning representations
             x_sl = F.elu(self.lin_src_sl_1(x_input))
             x_sl = F.elu(self.lin_src_sl_2(x_sl))
+            x_sl = F.elu(self.lin_src_sl_3(x_sl))
 
             # x_dst_sl = F.elu(self.lin_dst_sl_1(x_input))
             # x_dst_sl = F.elu(self.lin_dst_sl_2(x_dst_sl))
@@ -282,11 +285,10 @@ class GATConvMasked(MessagePassing):
             # Lift and concatenate into their edge positions
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
-            edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            # edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
+            # edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
+            edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
             # edge_reps = edge_reps / (edge_reps.max() - edge_reps.min())
             # edge_reps = edge_reps - edge_reps.mean()
-
 
             # New edge representations
             sl_scores = F.elu(self.mask_sl_1(edge_reps))
@@ -300,6 +302,7 @@ class GATConvMasked(MessagePassing):
 
         # Generate the masked attention coefficients
         alpha = self.sparse_softmax(alpha, edge_index[1], mask)
+        # alpha = softmax(alpha, edge_index[1], None, self.num_nodes)
 
         ####################################################################################
         ####################################################################################
@@ -365,20 +368,18 @@ class GATConvMasked(MessagePassing):
         # Add to logits
         logits = logits + Variable(noise)
 
-        # Add softmax
-        soft = F.softmax(logits, dim=1)
-
         # Straight Gumbel way
-        # logits = torch.log(logits)
-        # hard = F.gumbel_softmax(logits, tau=self.tau_sl, hard=True)
-        # mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
+        soft = F.softmax(logits, dim=1)
+        logits = torch.log(soft)
+        hard = F.gumbel_softmax(logits, tau=self.tau_sl, hard=True)
+        mask = hard[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
 
         # Soft trick way
-        _, k = soft.data.max(-1)
-        hard = torch.zeros(soft.shape)
-        hard = hard.zero_().scatter_(-1, k.view(logits.shape[:-1] + (1,)), 1.0)
-        y = Variable(hard - soft.data) + soft
-        mask = y[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
+        # _, k = soft.data.max(-1)
+        # hard = torch.zeros(soft.shape)
+        # hard = hard.zero_().scatter_(-1, k.view(logits.shape[:-1] + (1,)), 1.0)
+        # y = Variable(hard - soft.data) + soft
+        # mask = y[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
 
         # Just keep all the self loops
         # mask = mask[:-self.num_nodes, :]
