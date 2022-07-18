@@ -307,7 +307,7 @@ class GATConvMasked(MessagePassing):
         alpha = self.sparse_softmax(alpha, edge_index[1], mask)
         # alpha = softmax(alpha, edge_index[1], None, self.num_nodes)
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
-        alpha = alpha / (torch.sum(mask) / torch.numel(mask))
+        # alpha = alpha / (torch.sum(mask) / torch.numel(mask))
 
         ####################################################################################
         ####################################################################################
@@ -375,7 +375,7 @@ class GATConvMasked(MessagePassing):
         noise = - torch.log(1e-10 - torch.log(u + 1e-10))
 
         # Add to logits
-        logits = scores + torch.rand(scores.shape).float() / 10
+        logits = scores + ((u - u.mean()) / 10)   # + torch.rand(scores.shape).float() / 10
 
         # Straight Gumbel way
         soft = F.softmax(logits, dim=1)
