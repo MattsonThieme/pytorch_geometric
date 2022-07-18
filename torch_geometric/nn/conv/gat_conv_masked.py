@@ -144,8 +144,8 @@ class GATConvMasked(MessagePassing):
         self.lin_dst_sl_2 = Linear(256, 128,
                                    bias=False, weight_initializer='glorot')
 
-        self.mask_sl_1 = Linear(128, 64, bias=False, weight_initializer='glorot')
-        self.mask_sl_2 = Linear(64, 2, bias=False, weight_initializer='glorot')
+        self.mask_sl_1 = Linear(128, 64, bias=True, weight_initializer='glorot')
+        self.mask_sl_2 = Linear(64, 2, bias=True, weight_initializer='glorot')
 
         self.tau_sl = Parameter(torch.tensor([1.0]), requires_grad=False)
 
@@ -288,7 +288,7 @@ class GATConvMasked(MessagePassing):
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
             # edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
+            edge_reps = x_src_sl - x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
             # edge_reps = edge_reps / (edge_reps.max() - edge_reps.min())
             # edge_reps = edge_reps - edge_reps.mean()
 
