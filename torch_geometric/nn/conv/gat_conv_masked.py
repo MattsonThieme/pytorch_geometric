@@ -144,7 +144,7 @@ class GATConvMasked(MessagePassing):
         self.lin_dst_sl_2 = Linear(256, 128,
                                    bias=False, weight_initializer='glorot')
 
-        self.mask_sl_1 = Linear(128, 64, bias=True, weight_initializer='glorot')
+        self.mask_sl_1 = Linear(128, 64, bias=False, weight_initializer='glorot')
         self.mask_sl_2 = Linear(64, 2, bias=True, weight_initializer='glorot')
 
         self.tau_sl = Parameter(torch.tensor([1.0]), requires_grad=False)
@@ -185,6 +185,7 @@ class GATConvMasked(MessagePassing):
         self.reset_parameters()
 
     def reset_parameters(self):
+        torch.manual_seed(7)
         self.lin_src.reset_parameters()
         self.lin_dst.reset_parameters()
         if self.lin_edge is not None:
