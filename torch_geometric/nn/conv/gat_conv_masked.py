@@ -194,6 +194,9 @@ class GATConvMasked(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
+        self.mask_sl_1.bias = Parameter(torch.ones_like(self.mask_sl_1.bias) * 0.2)
+        self.mask_sl_2.bias = Parameter(torch.ones_like(self.mask_sl_2.bias) * 0.2)
+
     def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, mask, pre_train, drop,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
