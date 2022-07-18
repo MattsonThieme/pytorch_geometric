@@ -19,7 +19,7 @@ from torch_geometric.typing import (
 )
 from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
 
-from ..inits import glorot, zeros
+from ..inits import glorot, zeros, ones
 
 
 class GATConvMasked(MessagePassing):
@@ -194,9 +194,6 @@ class GATConvMasked(MessagePassing):
         glorot(self.att_edge)
         zeros(self.bias)
 
-        self.mask_sl_1.bias = Parameter(torch.ones_like(self.mask_sl_1.bias) * 0.2)
-        self.mask_sl_2.bias = Parameter(torch.ones_like(self.mask_sl_2.bias) * 0.2)
-
     def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj, mask, pre_train, drop,
                 edge_attr: OptTensor = None, size: Size = None,
                 return_attention_weights=None):
@@ -325,6 +322,9 @@ class GATConvMasked(MessagePassing):
 
         if self.bias is not None:
             out += self.bias
+
+        if out.isnan().any():
+            investigate = True
 
         if isinstance(return_attention_weights, bool):
             if isinstance(edge_index, Tensor):
