@@ -21,6 +21,8 @@ from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
 
 from ..inits import glorot, zeros, ones
 
+# This is just to help the model start with all the edges
+torch.manual_seed(2022)
 
 class GATConvMasked(MessagePassing):
     r"""The graph attentional operator from the `"Graph Attention Networks"
@@ -185,7 +187,6 @@ class GATConvMasked(MessagePassing):
         self.reset_parameters()
 
     def reset_parameters(self):
-        torch.manual_seed(7)
         self.lin_src.reset_parameters()
         self.lin_dst.reset_parameters()
         if self.lin_edge is not None:
@@ -333,7 +334,7 @@ class GATConvMasked(MessagePassing):
             elif isinstance(edge_index, SparseTensor):
                 return out, edge_index.set_value(alpha, layout='coo')
         else:
-            return out, mask, sl_scores
+            return out, mask, sl_scores, edge_index
 
     # Lift the attention coefficients into position
     # This is just broadcasting the node-level attention coefficients into edge-level
