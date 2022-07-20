@@ -23,6 +23,7 @@ from ..inits import glorot, zeros, ones
 
 # This is just to help the model start with all the edges
 torch.manual_seed(2022)
+# torch.manual_seed(2016)  # For concatenated representations
 
 class GATConvMasked(MessagePassing):
     r"""The graph attentional operator from the `"Graph Attention Networks"
@@ -290,7 +291,7 @@ class GATConvMasked(MessagePassing):
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
             # edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            edge_reps = x_src_sl - x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
+            edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
             # edge_reps = edge_reps / (edge_reps.max() - edge_reps.min())
             # edge_reps = edge_reps - edge_reps.mean()
 
@@ -363,7 +364,7 @@ class GATConvMasked(MessagePassing):
         alpha = F.leaky_relu(alpha, self.negative_slope)
         # alpha = softmax(alpha, index, ptr, size_i)
         # alpha = F.dropout(alpha, p=self.dropout, training=self.training)
-        return alpha  # , mask, scores
+        return alpha
 
     def get_mask(self, scores):
 
@@ -380,7 +381,11 @@ class GATConvMasked(MessagePassing):
         noise = - torch.log(1e-10 - torch.log(u + 1e-10))
 
         # Add to logits
-        logits = scores + ((u - u.mean()) / 10)   # + torch.rand(scores.shape).float() / 10
+        noise = ((u - u.mean()) / 10)
+        if self.training:
+            logits = scores + noise  # + torch.rand(scores.shape).float() / 10
+        else:
+            logits = scores
 
         # Straight Gumbel way
         soft = F.softmax(logits, dim=1)
