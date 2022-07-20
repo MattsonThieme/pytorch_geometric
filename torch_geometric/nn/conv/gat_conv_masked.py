@@ -142,10 +142,10 @@ class GATConvMasked(MessagePassing):
         self.lin_src_sl_3 = Linear(256, 128,
                                    bias=False, weight_initializer='glorot')
 
-        self.lin_dst_sl_1 = Linear(in_channels, 256,
-                                   bias=False, weight_initializer='glorot')
-        self.lin_dst_sl_2 = Linear(256, 128,
-                                   bias=False, weight_initializer='glorot')
+        # self.lin_dst_sl_1 = Linear(in_channels, 256,
+        #                            bias=False, weight_initializer='glorot')
+        # self.lin_dst_sl_2 = Linear(256, 128,
+        #                            bias=False, weight_initializer='glorot')
 
         self.mask_sl_1 = Linear(128, 64, bias=False, weight_initializer='glorot')
         self.mask_sl_2 = Linear(64, 2, bias=True, weight_initializer='glorot')
@@ -378,7 +378,7 @@ class GATConvMasked(MessagePassing):
 
         # Gumbel noise
         u = torch.rand(scores.shape).float()
-        noise = - torch.log(1e-10 - torch.log(u + 1e-10))
+        # noise = - torch.log(1e-10 - torch.log(u + 1e-10))
 
         # Add to logits
         noise = ((u - u.mean()) / 10)
