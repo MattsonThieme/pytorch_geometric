@@ -401,8 +401,8 @@ class GATConvMasked(MessagePassing):
         mask = y[:, 0].unsqueeze(1).expand(hard.shape[0], self.heads)
 
         # Just keep all the self loops
-        # mask = mask[:-self.num_nodes, :]
-        # mask = torch.cat((mask, torch.ones((self.num_nodes, self.heads))))
+        mask = mask[:-self.num_nodes, :]
+        mask = torch.cat((mask, torch.ones((self.num_nodes, self.heads))))
 
         if self.pre_train:
             mask = torch.ones(mask.shape)
