@@ -22,7 +22,8 @@ from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
 from ..inits import glorot, zeros, ones
 
 # This is just to help the model start with all the edges
-torch.manual_seed(2021)
+# torch.manual_seed(2022)  # Planetoid
+# torch.manual_seed(2021)  # WebKB
 # torch.manual_seed(2016)  # For concatenated representations
 
 class GATConvMasked(MessagePassing):
@@ -440,12 +441,6 @@ class GATConvMasked(MessagePassing):
 
         # Final output
         alpha = exp / alpha_sum
-
-        # alpha = F.dropout(alpha, p=self.dropout, training=self.training)
-
-        # if self.dropout == 0:
-        #     p = 1 - torch.sum(mask) / torch.numel(mask)
-        #     alpha = alpha / (1 - p)
 
         return alpha
 
