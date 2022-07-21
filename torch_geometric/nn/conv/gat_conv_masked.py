@@ -142,11 +142,11 @@ class GATConvMasked(MessagePassing):
         self.lin_src_sl_3 = Linear(256, 128, bias=False, weight_initializer='glorot')
 
         self.mask_sl_1 = Linear(256, 64, bias=False, weight_initializer='glorot')
-        self.mask_sl_2 = Linear(64, 2, bias=True, weight_initializer='glorot')
+        self.mask_sl_2 = Linear(64, 2, bias=False, weight_initializer='glorot')
 
         # Single-layer sl_scores and mask transform
         self.lin_src_sl_single = Linear(in_channels, 128, bias=False, weight_initializer='glorot')
-        self.mask_sl_single = Linear(256, 2, bias=True, weight_initializer='glorot')
+        self.mask_sl_single = Linear(256, 2, bias=False, weight_initializer='glorot')
 
         self.tau_sl = Parameter(torch.tensor([1.0]), requires_grad=False)
 
@@ -278,6 +278,7 @@ class GATConvMasked(MessagePassing):
             # x_sl = F.elu(self.lin_src_sl_2(x_sl))
             # x_sl = F.elu(self.lin_src_sl_3(x_sl))
             x_sl = F.elu(self.lin_src_sl_single(x_input))
+            # x_sl = torch.tanh(self.lin_src_sl_single(x_input))
 
             # x_dst_sl = F.elu(self.lin_dst_sl_1(x_input))
             # x_dst_sl = F.elu(self.lin_dst_sl_2(x_dst_sl))
@@ -377,7 +378,7 @@ class GATConvMasked(MessagePassing):
         # noise = - torch.log(1e-10 - torch.log(u + 1e-10))
 
         # Add to logits
-        noise = ((u - u.mean()) / 10)
+        noise = ((u - u.mean()) / 5)
         if self.training:
             logits = scores + noise  # + torch.rand(scores.shape).float() / 10
         else:
