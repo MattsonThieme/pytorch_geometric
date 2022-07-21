@@ -22,7 +22,7 @@ from torch_geometric.utils import add_self_loops, remove_self_loops, softmax
 from ..inits import glorot, zeros, ones
 
 # This is just to help the model start with all the edges
-torch.manual_seed(2022)
+torch.manual_seed(2021)
 # torch.manual_seed(2016)  # For concatenated representations
 
 class GATConvMasked(MessagePassing):
@@ -135,42 +135,35 @@ class GATConvMasked(MessagePassing):
         self.edge_dim = edge_dim
         self.fill_value = fill_value
 
-        self.lin_src_sl_1 = Linear(in_channels, 512,
-                                   bias=False, weight_initializer='glorot')
-        self.lin_src_sl_2 = Linear(512, 256,
-                                   bias=False, weight_initializer='glorot')
-        self.lin_src_sl_3 = Linear(256, 128,
-                                   bias=False, weight_initializer='glorot')
+        # Multi-layer sl_scores and mask transform
+        self.lin_src_sl_1 = Linear(in_channels, 512, bias=False, weight_initializer='glorot')
+        self.lin_src_sl_2 = Linear(512, 256, bias=False, weight_initializer='glorot')
+        self.lin_src_sl_3 = Linear(256, 128, bias=False, weight_initializer='glorot')
 
-        # self.lin_dst_sl_1 = Linear(in_channels, 256,
-        #                            bias=False, weight_initializer='glorot')
-        # self.lin_dst_sl_2 = Linear(256, 128,
-        #                            bias=False, weight_initializer='glorot')
-
-        self.mask_sl_1 = Linear(128, 64, bias=False, weight_initializer='glorot')
+        self.mask_sl_1 = Linear(256, 64, bias=False, weight_initializer='glorot')
         self.mask_sl_2 = Linear(64, 2, bias=True, weight_initializer='glorot')
+
+        # Single-layer sl_scores and mask transform
+        self.lin_src_sl_single = Linear(in_channels, 128, bias=False, weight_initializer='glorot')
+        self.mask_sl_single = Linear(256, 2, bias=True, weight_initializer='glorot')
 
         self.tau_sl = Parameter(torch.tensor([1.0]), requires_grad=False)
 
         # In case we are operating in bipartite graphs, we apply separate
         # transformations 'lin_src' and 'lin_dst' to source and target nodes:
         if isinstance(in_channels, int):
-            self.lin_src = Linear(in_channels, heads * out_channels,
-                                  bias=False, weight_initializer='glorot')
+            self.lin_src = Linear(in_channels, heads * out_channels, bias=False, weight_initializer='glorot')
             self.lin_dst = self.lin_src
         else:
-            self.lin_src = Linear(in_channels[0], heads * out_channels, False,
-                                  weight_initializer='glorot')
-            self.lin_dst = Linear(in_channels[1], heads * out_channels, False,
-                                  weight_initializer='glorot')
+            self.lin_src = Linear(in_channels[0], heads * out_channels, False, weight_initializer='glorot')
+            self.lin_dst = Linear(in_channels[1], heads * out_channels, False, weight_initializer='glorot')
 
         # The learnable parameters to compute attention coefficients:
         self.att_src = Parameter(torch.Tensor(1, heads, out_channels))
         self.att_dst = Parameter(torch.Tensor(1, heads, out_channels))
 
         if edge_dim is not None:
-            self.lin_edge = Linear(edge_dim, heads * out_channels, bias=False,
-                                   weight_initializer='glorot')
+            self.lin_edge = Linear(edge_dim, heads * out_channels, bias=False, weight_initializer='glorot')
             self.att_edge = Parameter(torch.Tensor(1, heads, out_channels))
         else:
             self.lin_edge = None
@@ -280,9 +273,10 @@ class GATConvMasked(MessagePassing):
 
         if not isinstance(mask, Tensor):
             # New structure learning representations
-            x_sl = F.elu(self.lin_src_sl_1(x_input))
-            x_sl = F.elu(self.lin_src_sl_2(x_sl))
-            x_sl = F.elu(self.lin_src_sl_3(x_sl))
+            # x_sl = F.elu(self.lin_src_sl_1(x_input))
+            # x_sl = F.elu(self.lin_src_sl_2(x_sl))
+            # x_sl = F.elu(self.lin_src_sl_3(x_sl))
+            x_sl = F.elu(self.lin_src_sl_single(x_input))
 
             # x_dst_sl = F.elu(self.lin_dst_sl_1(x_input))
             # x_dst_sl = F.elu(self.lin_dst_sl_2(x_dst_sl))
@@ -290,15 +284,16 @@ class GATConvMasked(MessagePassing):
             # Lift and concatenate into their edge positions
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
-            # edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
+            edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
+            # edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
             # edge_reps = edge_reps / (edge_reps.max() - edge_reps.min())
             # edge_reps = edge_reps - edge_reps.mean()
 
             # New edge representations
-            sl_scores = F.elu(self.mask_sl_1(edge_reps))
-            sl_scores = self.mask_sl_2(sl_scores)
-            # sl_scores = sl_scores / (sl_scores.max() - sl_scores.min())
+            # sl_scores = F.elu(self.mask_sl_1(edge_reps))
+            # sl_scores = self.mask_sl_2(sl_scores)
+            sl_scores = self.mask_sl_single(edge_reps)
+
             sl_scores = torch.tanh(sl_scores)
 
             # Generate the new mask
