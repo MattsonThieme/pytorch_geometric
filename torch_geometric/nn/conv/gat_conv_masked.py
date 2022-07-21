@@ -439,14 +439,18 @@ class GATConvMasked(MessagePassing):
         # Mask one final time after index_select
         alpha_sum = alpha_sum * mask
 
+        # Remove any zeros from the sum, this can happen occasionally within a single attention head
+        alpha_sum = alpha_sum + (1 - mask)
+        alpha_sum = alpha_sum + (alpha_sum == 0) * 1.0
+
         # Final output
-        alpha = exp / (alpha_sum + (1 - mask))
+        alpha = exp / alpha_sum
 
         # alpha = F.dropout(alpha, p=self.dropout, training=self.training)
 
-        if self.dropout == 0:
-            p = 1 - torch.sum(mask) / torch.numel(mask)
-            # alpha = alpha / (1 - p)
+        # if self.dropout == 0:
+        #     p = 1 - torch.sum(mask) / torch.numel(mask)
+        #     alpha = alpha / (1 - p)
 
         return alpha
 
