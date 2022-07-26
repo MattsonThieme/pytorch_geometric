@@ -287,7 +287,7 @@ class GATConvMasked(MessagePassing):
             x_src_sl = self.lift(x_sl, edge_index, 0)
             x_dst_sl = self.lift(x_sl, edge_index, 1)
             edge_reps = torch.cat((x_src_sl, x_dst_sl), dim=1)
-            # edge_reps = x_src_sl + x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
+            # edge_reps = x_src_sl - x_dst_sl  # Subtraction makes the self loops zero, model quickly keeps them all
             # edge_reps = edge_reps / (edge_reps.max() - edge_reps.min())
             # edge_reps = edge_reps - edge_reps.mean()
 
@@ -378,7 +378,7 @@ class GATConvMasked(MessagePassing):
         # noise = - torch.log(1e-10 - torch.log(u + 1e-10))
 
         # Add to logits
-        noise = ((u - u.mean()) / 5)
+        noise = ((u - u.mean()))  # / 10)
         if self.training:
             logits = scores + noise  # + torch.rand(scores.shape).float() / 10
         else:
